@@ -112,6 +112,53 @@ def _tandem_envelope_M(L: float) -> float:
     return M_best
 
 
+def hl93_envelope(
+    L_m: float,
+    *,
+    impact_factor: float = 1.33,
+    n_points: int = 200,
+) -> dict[str, Any]:
+    """Envolvente HL-93 (AASHTO LRFD) en una viga simplemente apoyada.
+
+    Wrapper de conveniencia con firma posicional ``hl93_envelope(L_m, ...)``
+    (idea #12): delega en :func:`hl93_influence_envelope` y devuelve un dict
+    con el desglose camión / tándem / carril, ya combinado según LRFD
+    §3.6.1.3 — ``max(camión, tándem)·IM + carril`` — y el vehículo que
+    gobierna. ``M_max_kNm`` / ``V_max_kN`` son las solicitaciones de diseño.
+
+    Parameters
+    ----------
+    L_m : luz de la viga simplemente apoyada [m].
+    impact_factor : 1 + IM (default 1.33 → IM=33 %, LRFD §3.6.2). Se aplica
+        SOLO a la componente vehicular, no al carril.
+    n_points : densidad de la malla de barrido.
+
+    Returns
+    -------
+    dict con ``M_max_kNm``, ``V_max_kN``, ``governing_vehicle`` y el desglose
+    ``M_truck_kNm`` / ``M_tandem_kNm`` / ``M_lane_kNm`` (sin IM) más ``IM``.
+    """
+    cfg = HL93Configuration(span_m=L_m, n_points=n_points,
+                            impact_factor=impact_factor)
+    res = hl93_influence_envelope(cfg)
+    L = float(L_m)
+    M_truck = _truck_envelope_M(L)
+    M_tandem = _tandem_envelope_M(L)
+    M_lane = LANE_LOAD_kN_per_m * L * L / 8.0
+    V_lane = LANE_LOAD_kN_per_m * L / 2.0
+    return {
+        "M_max_kNm": res.M_max_kNm,
+        "V_max_kN": res.V_max_kN,
+        "governing_vehicle": res.governing_vehicle,
+        "M_truck_kNm": M_truck,
+        "M_tandem_kNm": M_tandem,
+        "M_lane_kNm": M_lane,
+        "V_lane_kN": V_lane,
+        "IM": impact_factor,
+        "span_m": L,
+    }
+
+
 def hl93_influence_envelope(cfg: HL93Configuration) -> HL93Result:
     """Calcula la envolvente HL-93 para una viga simple.
 
@@ -231,6 +278,7 @@ def hl93k_nch_envelope(cfg: HL93KNChConfiguration) -> HL93KNChResult:
 
 __all__ = [
     "HL93Configuration", "HL93Result", "hl93_influence_envelope",
+    "hl93_envelope",
     "HL93KNChConfiguration", "HL93KNChResult", "hl93k_nch_envelope",
     "NCH_TRUCK_AXLES_kN", "NCH_TRUCK_AXLE_SPACINGS_m",
 ]
