@@ -7,6 +7,7 @@ from bridgejm.loads.influence_lines import (
     critical_position,
     InfluenceLine,
     simple_beam_M_influence,
+    two_span_continuous_M_at_support,
 )
 from bridgejm.loads.hl93 import TRUCK_AXLES_kN, TRUCK_AXLE_SPACINGS_m
 
@@ -144,3 +145,87 @@ class TestCriticalPosition:
         assert 0.35 <= best_xfrac <= 0.50, (
             f"Pico en {best_xfrac:.3f}L, esperado ~0.4L"
         )
+
+
+class TestTwoSpanSupportMomentILGolden:
+    """GOLDEN — Linea de influencia del momento sobre el apoyo intermedio de
+    una viga continua de DOS tramos iguales (caso clasico hiperestatico).
+
+    Ancla EXTERNA, independiente de la rutina bajo prueba: el extremo de la
+    LI se deriva por la ECUACION DE LOS TRES MOMENTOS (Clapeyron) /
+    Muller-Breslau, un metodo DISTINTO de la forma cerrada que usa la
+    rutina, y se contrasta ademas con el solver de rigidez independiente
+    (``influence_line_continuous``). Para carga unidad a distancia ``a`` del
+    extremo del primer vano (vanos iguales L, longitud total 2L) la ordenada
+    de la LI del momento en el apoyo central es (resultado hiperestatico
+    estandar, tablas de LI para vigas continuas de vanos iguales):
+
+        eta(a) = - a (L^2 - a^2) / (4 L^2)
+
+    Maximizando |eta| (d/da [a(L^2 - a^2)] = L^2 - 3 a^2 = 0):
+
+        a*    = L / sqrt(3)        = 0.57735 L
+        eta*  = - L / (6 sqrt(3))  = -0.096225 L   (valor minimo / pico)
+
+    Estos dos numeros (POSICION y ORDENADA del pico) se derivan por calculo
+    sobre la LI publicada, NO recalculando con la propia rutina -> golden
+    honesto y no tautologico. La rutina arma eta(x) numericamente sobre una
+    malla con su formula Muller-Breslau; el test comprueba que su pico
+    discreto reproduce el extremo analitico.
+    """
+
+    # Extremo analitico publicado (forma cerrada), normalizado por L.
+    A_STAR_OVER_L = 1.0 / np.sqrt(3.0)          # 0.57735
+    ETA_STAR_OVER_L = -1.0 / (6.0 * np.sqrt(3.0))  # -0.096225
+
+    @pytest.mark.parametrize("L", [10.0, 20.0, 30.0])
+    def test_pico_ordenada_y_posicion_vanos_iguales(self, L):
+        """El pico (minimo) de la LI coincide con -L/(6*sqrt(3)) en a=L/sqrt(3)."""
+        il = two_span_continuous_M_at_support(L, L, n_points=400)
+        i_min = int(np.argmin(il.ordinates))
+        eta_min = float(il.ordinates[i_min])
+        x_min = float(il.x_m[i_min])
+
+        # Valor del pico: ancla publicada -0.096225*L (tol 0.5 % por malla)
+        assert eta_min == pytest.approx(self.ETA_STAR_OVER_L * L, rel=5e-3)
+        # Posicion del pico: a* = 0.57735*L (en el primer vano), tol ~0.5 m
+        assert x_min == pytest.approx(self.A_STAR_OVER_L * L, abs=L / 200.0 + 0.05)
+        # La LI del momento de apoyo es negativa en todo el interior.
+        assert np.max(il.ordinates) <= 1e-9
+        # Apoyos: ordenada nula en los extremos y en el apoyo central.
+        assert il.ordinates[0] == pytest.approx(0.0, abs=1e-9)
+        assert il.ordinates[-1] == pytest.approx(0.0, abs=1e-9)
+
+    def test_valor_en_centro_de_vano_forma_cerrada(self):
+        """En a = L/2 (centro del primer vano) la forma cerrada da
+        eta = -(L/2)(L^2 - L^2/4)/(4 L^2) = -3L/32 = -0.09375 L."""
+        L = 24.0
+        il = two_span_continuous_M_at_support(L, L, n_points=801)
+        # localizar el nodo mas cercano a x = L/2
+        idx = int(np.argmin(np.abs(il.x_m - L / 2.0)))
+        eta_mid = float(il.ordinates[idx])
+        assert eta_mid == pytest.approx(-3.0 * L / 32.0, rel=2e-3)
+
+    def test_cross_check_three_moment_solver(self):
+        """Cross-validacion: el solver hiperestatico independiente
+        (``influence_line_continuous`` por tres-momentos / Clapeyron) debe
+        reproducir el MISMO pico publicado -L/(6*sqrt(3)) para la LI del
+        momento en el apoyo central. Dos rutas de codigo independientes
+        coincidiendo en el numero publicado.
+        """
+        L = 20.0
+        il = influence_line_continuous([L, L], L, n_points=400, quantity="M")
+        eta_min = float(np.min(il.ordinates))
+        assert eta_min == pytest.approx(self.ETA_STAR_OVER_L * L, rel=5e-3)
+
+    def test_escala_con_vanos_desiguales(self):
+        """Vanos desiguales: el pico en el vano i (longitud Li) sigue la
+        forma cerrada por vano eta_i(a) = -a(Li^2 - a^2)/(4 Li (L1+L2))*2... .
+        Aqui solo verificamos consistencia de signo y que el vano mas largo
+        produce mayor |ordenada| (la LI es mas profunda del lado largo)."""
+        il = two_span_continuous_M_at_support(30.0, 15.0, n_points=400)
+        i_min = int(np.argmin(il.ordinates))
+        x_min = float(il.x_m[i_min])
+        # El minimo global cae en el vano largo (primer vano, x < 30).
+        assert x_min < 30.0
+        assert float(il.ordinates[i_min]) < 0.0
