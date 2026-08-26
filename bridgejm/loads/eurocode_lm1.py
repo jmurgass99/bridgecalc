@@ -132,13 +132,16 @@ def evaluate_eurocode_lm1(inp: EurocodeLM1Input) -> EurocodeLM1Result:
         alpha_Q = inp.alpha_Q1 if i == 0 else inp.alpha_Qr
         Q_eff = alpha_Q * Q_axle
 
-        # 2 ejes a 1.2 m separacion
-        # M_max para 2 puntuales simetricas: P*(L/2 - d/2) con d=1.2
-        half_spacing = LM1_TS_AXLE_SPACING_m / 2.0
-        if L > LM1_TS_AXLE_SPACING_m:
-            M_ts_lane = Q_eff * (L / 2.0 - half_spacing) * 2.0 * (
-                (L / 2.0 + half_spacing) / L
-            )
+        # 2 ejes a 1.2 m separacion. Teorema de la equidistancia (carga y
+        # resultante equidistantes del centro de vano) para dos puntuales
+        # iguales separadas d: M_max = P*(L-d)/2 + P*d^2/(8L). Centrar el
+        # GRUPO en el vano (formula anterior) da un valor CERCANO pero no
+        # exacto, y por encima del maximo fisico alcanzable con esas dos
+        # cargas -- verificado: para L=30, d=1.2 daba 14.976*P, mas que el
+        # maximo real 14.406*P, un exceso del 3.96% (fisicamente imposible).
+        d = LM1_TS_AXLE_SPACING_m
+        if L > d:
+            M_ts_lane = Q_eff * ((L - d) / 2.0 + (d ** 2) / (8.0 * L))
         else:
             M_ts_lane = Q_eff * L / 2.0
 
