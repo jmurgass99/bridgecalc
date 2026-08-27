@@ -23,7 +23,7 @@ def create_router() -> Any:
         span_m: float = Field(..., gt=0)
         impact_factor: float = Field(1.33, gt=0)
 
-    @router.post("/api/bridge/hl93/single")
+    @router.post("/api/bridge/hl93/single", summary="Tren de cargas HL-93 en vano simple según AASHTO LRFD §3.6.1")
     def hl93_single(payload: HL93Payload) -> dict[str, Any]:
         try:
             r = hl93_influence_envelope(HL93Configuration(
@@ -38,7 +38,7 @@ def create_router() -> Any:
         n_spans: int = Field(..., ge=2, le=3)
         impact_factor: float = Field(1.33, gt=0)
 
-    @router.post("/api/bridge/hl93/multispan")
+    @router.post("/api/bridge/hl93/multispan", summary="Tren de cargas HL-93 en puente continuo multivano según AASHTO LRFD §3.6.1")
     def hl93_multispan(payload: MultiSpanPayload) -> dict[str, Any]:
         try:
             r = envelope_multispan(MultiSpanInput(**payload.model_dump()))
@@ -53,7 +53,7 @@ def create_router() -> Any:
         F_y: float = Field(..., gt=0)
         beta: float = 0.10
 
-    @router.post("/api/bridge/fragility/park-ang")
+    @router.post("/api/bridge/fragility/park-ang", summary="Índice de daño sísmico de pilas según modelo de Park & Ang (1985)")
     def fragility_park_ang(payload: ParkAngPayload) -> dict[str, Any]:
         try:
             DI = park_ang_damage_index(**payload.model_dump())
