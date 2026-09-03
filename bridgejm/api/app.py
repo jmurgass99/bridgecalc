@@ -64,6 +64,60 @@ def create_router() -> Any:
                           "repairable" if DI < 0.7 else
                           "collapse_risk"}
 
+    class LM1Payload(BaseModel):
+        span_m: float = Field(..., gt=0)
+        n_lanes: int = Field(2, ge=1, le=5)
+        alpha_Q: float = Field(1.0, gt=0)
+        alpha_q: float = Field(1.0, gt=0)
+        lane_width: float = Field(3.0, gt=0)
+
+    @router.post("/api/bridge/traffic/lm1", summary="Tren de cargas Load Model 1 (LM1) y envolvente según EN 1991-2 §4.3.2")
+    def traffic_lm1(payload: LM1Payload) -> dict[str, Any]:
+        from ..ec1_traffic import LM1, traffic_envelope_lm1
+        try:
+            lm1 = LM1(
+                n_lanes=payload.n_lanes,
+                alpha_Q=payload.alpha_Q,
+                alpha_q=payload.alpha_q,
+                lane_width=payload.lane_width,
+            )
+            lanes = lm1.lane_loads()
+            M_max_kNm, V_max_kN = traffic_envelope_lm1(
+                L_span=payload.span_m,
+                n_lanes=payload.n_lanes,
+                alpha_Q=payload.alpha_Q,
+                alpha_q=payload.alpha_q,
+                lane_width=payload.lane_width,
+            )
+            return {
+                "span_m": payload.span_m,
+                "n_lanes": payload.n_lanes,
+                "lanes": lanes,
+                "M_max_kNm": M_max_kNm,
+                "V_max_kN": V_max_kN,
+                "code": "EN 1991-2 §4.3.2 (LM1)",
+            }
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    class LM2Payload(BaseModel):
+        beta_Q: float = Field(1.0, gt=0)
+
+    @router.post("/api/bridge/traffic/lm2", summary="Tren de cargas Load Model 2 (LM2: eje 400 kN) según EN 1991-2 §4.3.3")
+    def traffic_lm2(payload: LM2Payload) -> dict[str, Any]:
+        from ..ec1_traffic import LM2
+        try:
+            lm2 = LM2(beta_Q=payload.beta_Q)
+            return {
+                "Qak_kN": lm2.Qak_kN,
+                "beta_Q": payload.beta_Q,
+                "contact_surfaces_m": "2 x (0.35 x 0.60)",
+                "transverse_spacing_m": 2.0,
+                "code": "EN 1991-2 §4.3.3 (LM2)",
+            }
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
     return router
 
 

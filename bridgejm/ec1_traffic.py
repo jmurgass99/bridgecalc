@@ -80,6 +80,43 @@ class LM4:
         return self.q_kPa * width_m
 
 
+def _tandem_max_moment(Q: float, a: float, L: float) -> float:
+    """Máximo momento absoluto de dos ejes iguales Q separados ``a``, en luz L.
+
+    Teorema de Barré: con un tren de cargas puntuales, el momento máximo absoluto
+    de una viga biapoyada ocurre BAJO uno de los ejes, cuando el centro de luz
+    bisecta la distancia entre ese eje y la resultante del grupo.  Para dos ejes
+    iguales la resultante cae en el punto medio, a ``a/2`` de cada eje, así que el
+    eje crítico se sitúa a ``a/4`` del centro::
+
+        x_c = L/2 - a/4
+        R_L = Q[(L - x_c) + (L - x_c - a)] / L
+        M   = R_L * x_c
+
+    Verificado contra búsqueda numérica sobre todas las posiciones del tándem y
+    todas las secciones (``tests/test_ec1_tandem_barre.py``): L=20 m, Q=300 kN,
+    a=1.2 m → 2822.700 kN·m en x=9.70, coincidencia exacta.
+
+    QUÉ HABÍA ANTES, porque cambia un valor de diseño: se colocaban los ejes en
+    L/2 ± a/2 y se sumaba ``Q·d1·(L-d1)/L`` —el momento en la sección 9.4 m— con
+    ``Q·(L-d2)·x/L`` —el momento en la sección 10.0 m—, como si fueran la misma
+    sección.  Daba 2904.600 kN·m, un +2.90 % sobre el máximo real.  El error iba
+    del lado seguro; se corrige porque un número que sale de sumar dos secciones
+    no se puede razonar, no porque fuera inseguro.  La envolvente de una luz de
+    20 m con 2 carriles BAJA de 6566.0 a 6429.5 kN·m.
+    """
+    un_eje = Q * L / 4.0            # un solo eje centrado
+    if a >= L:
+        return un_eje               # el segundo eje no entra en la luz
+    x_c = L / 2.0 - a / 4.0
+    if x_c <= 0.0 or x_c + a > L:
+        # La posición de Barré saca el segundo eje fuera de la luz (sólo para
+        # a > 2L/3). Con un eje dentro, el centrado manda.
+        return un_eje
+    R_L = Q * ((L - x_c) + (L - x_c - a)) / L
+    return max(un_eje, R_L * x_c)
+
+
 def traffic_envelope_lm1(
     L_span: float,
     n_lanes: int,
@@ -106,26 +143,11 @@ def traffic_envelope_lm1(
         V_udl += w * L_span / 2.0
 
     # Tandem system: two axles of Qik separated by 1.2 m (EN 1991-2 §4.3.2).
-    # For M_max place TS straddling mid-span (axles at L/2 ± a/2):
     M_ts = 0.0
     V_ts = 0.0
     a = ts_axle_spacing
     for Q in lm.tandem_axles_kN():
-        # Each axle Q (kN) is one wheel pair (already total per axle)
-        # Simply supported beam, point load P at distance d from left:
-        # reaction R_left = P*(L-d)/L; moment at d: P*d*(L-d)/L
-        d1 = L_span / 2.0 - a / 2.0
-        d2 = L_span / 2.0 + a / 2.0
-        if 0.0 <= d1 <= L_span and 0.0 <= d2 <= L_span:
-            M1 = Q * d1 * (L_span - d1) / L_span
-            # contribution to moment at section x = L/2 from load at d2
-            # M_x = P*(L-d)*x/L for x<=d
-            x = L_span / 2.0
-            M2 = Q * (L_span - d2) * x / L_span
-            M_ts += M1 + M2
-        else:
-            # Span shorter than tandem; place single axle at mid-span
-            M_ts += Q * L_span / 4.0
+        M_ts += _tandem_max_moment(Q, a, L_span)
 
         # V_max: place both axles as close to support as possible (one at x=0+, the other at a)
         # V at left support = sum of reactions from both axles
