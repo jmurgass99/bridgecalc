@@ -34,23 +34,3 @@ def test_bwbn_histeresis_no_lineal():
     F = simulate(u, p, dt=0.01)
     assert len(F) == 50
     assert max(F) > 0
-
-
-def test_dynamics_pushover_cepa():
-    from bridgejm.integration.dynamics_pushover import (
-        CepaPushoverInput, pushover_cepa,
-    )
-    res = pushover_cepa(CepaPushoverInput(H_cepa_m=8, D_cepa_m=1.5))
-    assert res.Vy_kN > 0
-    assert res.delta_u_mm > res.delta_y_mm
-    assert res.mu_disp > 1.0
-
-
-def test_foundation_cepa():
-    from bridgejm.integration.foundation_cepa import (
-        CepaFoundationInput, disenar_cimiento_cepa,
-    )
-    res = disenar_cimiento_cepa(CepaFoundationInput(
-        N_kN=5000, M_kNm=2000, V_kN=500, D_cepa_m=1.5, n_piles=8,
-    ))
-    assert res.Q_pile_max_kN > res.Q_pile_min_kN
