@@ -1,4 +1,4 @@
-"""
+r"""
 pyRevit script DE EJEMPLO — BridgeJm import.
 
 Cómo usar:
