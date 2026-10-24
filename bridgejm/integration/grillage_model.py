@@ -29,6 +29,7 @@ import re
 from typing import Any
 
 from fastsap.section_catalog import IShape, get_section
+from fastsap.utils import csi_enum
 from ..ec1_traffic import LM1, traffic_envelope_lm1
 from ..loads.en1990_combinations import GAMMA_G_SUP
 from ..loads.hl93 import (
@@ -66,9 +67,13 @@ class OAPICallError(RuntimeError):
 
 
 def _check_ret(op: str, ret: Any) -> None:
-    """Verifica estrictamente el retorno de una llamada OAPI CSI (ret == 0)."""
+    """Verifica estrictamente el retorno de una llamada OAPI CSI (ret == 0).
+
+    En pythonnet 3 las llamadas OAPI con parámetros ``ref``/``out`` devuelven
+    ``(ret, *out_values)`` con el código entero ``ret`` en la primera posición ``[0]``.
+    """
     if isinstance(ret, (tuple, list)):
-        rc = ret[-1] if ret else 1
+        rc = ret[0] if ret else 1
     else:
         rc = ret
     if rc != 0:
@@ -318,6 +323,77 @@ def select_bridge_sections(
     return girder, diaph, trace
 
 
+def notional_lanes_en1991_2(width_m: float) -> dict[str, Any]:
+    """División de la calzada en carriles nocionales según EN 1991-2 §4.2.3 Tabla 4.1.
+
+    - ``w < 5.4 m``: ``n_1 = 1`` carril nocional de ``w_l = 3.0 m``, área remanente ``w - 3.0``.
+    - ``5.4 m <= w < 6.0 m``: ``n_1 = 2`` carriles nocionales de ``w_l = w / 2.0``, área remanente ``0.0``.
+    - ``w >= 6.0 m``: ``n_1 = int(w // 3.0)`` carriles nocionales de ``w_l = 3.0 m`` y
+      área remanente ``w_r = w - 3.0 * n_1``.
+    """
+    if width_m <= 0:
+        raise ValueError("width_m debe ser > 0")
+    if width_m < 5.4 - 1e-9:
+        n_1 = 1
+        w_l = min(3.0, width_m)
+        w_r = max(0.0, round(width_m - w_l, 6))
+    elif width_m < 6.0 - 1e-9:
+        n_1 = 2
+        w_l = round(width_m / 2.0, 6)
+        w_r = 0.0
+    else:
+        n_1 = int(math.floor((width_m + 1e-9) / 3.0))
+        w_l = 3.0
+        w_r = max(0.0, round(width_m - 3.0 * n_1, 6))
+    return {
+        "norm_ref": "EN 1991-2 §4.2.3 Tabla 4.1",
+        "carriageway_width_m": round(width_m, 6),
+        "n_notional_lanes": n_1,
+        "notional_lane_width_m": w_l,
+        "remaining_width_m": w_r,
+    }
+
+
+def design_lanes_aashto_lrfd(width_m: float) -> dict[str, Any]:
+    """Número de carriles de diseño según AASHTO LRFD §3.6.1.1.1 (w_lane = 3.60 m)."""
+    if width_m <= 0:
+        raise ValueError("width_m debe ser > 0")
+    if width_m < 6.0 - 1e-9:
+        n_l = 1
+    elif width_m <= 7.20 + 1e-9:
+        n_l = 2
+    else:
+        n_l = max(1, int(math.floor((width_m + 1e-9) / 3.60)))
+    w_l = 3.60 if width_m >= 7.20 else round(width_m / n_l, 6)
+    w_r = max(0.0, round(width_m - n_l * w_l, 6))
+    return {
+        "norm_ref": "AASHTO LRFD §3.6.1.1.1",
+        "carriageway_width_m": round(width_m, 6),
+        "n_notional_lanes": n_l,
+        "notional_lane_width_m": w_l,
+        "remaining_width_m": w_r,
+    }
+
+
+def courbon_transverse_factors(y_girders: list[float], y_load: float) -> list[float]:
+    """Factores de distribución transversal excéntrica de Courbon (tablero rígido / ley de palanca global):
+
+    ``eta_i(y_load) = 1 / n_g + (y_load - y_bar) * (y_i - y_bar) / sum_j (y_j - y_bar)^2``
+
+    Garantiza equilibrio exacto de fuerzas verticales (``sum_i eta_i == 1.0``) y
+    de momento torsor/vuelco transversal (``sum_i eta_i * y_i == y_load``).
+    """
+    n_g = len(y_girders)
+    if n_g < 2:
+        raise ValueError("Se requieren al menos 2 vigas para reparto transversal")
+    y_bar = sum(y_girders) / n_g
+    denom = sum((y - y_bar) ** 2 for y in y_girders)
+    if denom <= 1e-12:
+        return [1.0 / n_g] * n_g
+    e_load = y_load - y_bar
+    return [1.0 / n_g + e_load * (y_i - y_bar) / denom for y_i in y_girders]
+
+
 def bridge_spec_from_encargo(encargo: Any) -> BridgeDesignSpec:
     """Construye un ``BridgeDesignSpec`` trazable a partir de un ``Encargo`` ejecutable."""
     if not getattr(encargo, "ejecutable", False):
@@ -343,15 +419,23 @@ def bridge_spec_from_encargo(encargo: Any) -> BridgeDesignSpec:
     galibo_raw = _val("galibo")
     acciones_raw = _val("acciones")
 
+    if any(k in norma_raw.upper() or k in acciones_raw.upper() for k in ("AASHTO", "HL-93", "HL93", "CCP", "NSR")):
+        norma_code = "AASHTO_LRFD"
+    else:
+        norma_code = "EN_1991_2"
+
     # Parsear ancho de tablero o numero de carriles
     m_carriles = re.search(r"(\d+)\s*carriles?", ancho_raw, re.I)
     m_ancho = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:metros|m)\b", ancho_raw, re.I)
     if m_ancho:
         width_m = float(m_ancho.group(1).replace(",", "."))
-        n_lanes = max(1, int(width_m // 3.5))
+        if norma_code == "EN_1991_2":
+            n_lanes = notional_lanes_en1991_2(width_m)["n_notional_lanes"]
+        else:
+            n_lanes = design_lanes_aashto_lrfd(width_m)["n_notional_lanes"]
     elif m_carriles:
         n_lanes = int(m_carriles.group(1))
-        width_m = round(n_lanes * 3.5 + 3.0, 3)  # carriles de 3.5 m + arcenes de 1.5 m
+        width_m = round(n_lanes * 3.5 + 3.0, 3)  # carriles fisicos de 3.5 m + arcenes de 1.5 m
     else:
         raise ValueError(f"No se pudo extraer ancho o carriles de {ancho_raw!r}")
 
@@ -360,11 +444,6 @@ def bridge_spec_from_encargo(encargo: Any) -> BridgeDesignSpec:
 
     m_vanos = re.search(r"(\d+)\s*vanos", apoyos_raw, re.I)
     n_spans = int(m_vanos.group(1)) if m_vanos else 1
-
-    if any(k in norma_raw.upper() or k in acciones_raw.upper() for k in ("AASHTO", "HL-93", "HL93", "CCP", "NSR")):
-        norma_code = "AASHTO_LRFD"
-    else:
-        norma_code = "EN_1991_2"
 
     n_girders = max(3, min(8, round(width_m / 2.5)))
     n_diaphragms = max(2, round(span_m / 7.5) - 1)
@@ -533,24 +612,49 @@ def _compute_grillage_loads(
 ) -> dict[str, Any]:
     """Calcula las cargas permanentes (DEAD, DW), sobrecarga de carril (LIVE_LANE),
     posiciones pesimas del vehiculo de diseno (LIVE_VEHICLE_M en centro de vano y
-    LIVE_VEHICLE_V junto al apoyo) y combinaciones normativas ELU/ELS.
+    LIVE_VEHICLE_V junto al apoyo), distribucion transversal excentrica (Courbon) y
+    cargas puntuales en barras sin condensacion nodal espuria sobre los apoyos.
     """
     width_m = round((n_girders - 1) * girder_spacing, 6)
     norma = spec.norma if spec is not None else "AASHTO_LRFD"
-    n_lanes = spec.n_lanes if spec is not None else max(1, int(width_m // 3.5))
     slab_thickness_m = spec.slab_thickness_m if spec is not None else 0.25
     wearing_kPa = spec.wearing_surface_kPa if spec is not None else 2.0
     barrier_total_kN_m = spec.barrier_load_kN_m_total if spec is not None else 5.0
 
-    # Ancho tributario medio por viga longitudinal
+    if norma == "EN_1991_2":
+        lane_layout = notional_lanes_en1991_2(width_m)
+    else:
+        lane_layout = design_lanes_aashto_lrfd(width_m)
+    n_lanes = spec.n_lanes if spec is not None else int(lane_layout["n_notional_lanes"])
+
+    # Coordenadas transversales de las vigas longitudinales ig = 0 .. n_girders-1
+    y_girders = [round(ig * girder_spacing, 6) for ig in range(n_girders)]
+
+    # Ancho tributario medio por viga longitudinal (cargas permanentes simetricas)
     b_trib = width_m / n_girders
     # Peso de la losa de hormigon armado (25 kN/m^3 * espesor * ancho tributario)
     q_slab_per_girder_kN_m = round(25.0 * slab_thickness_m * b_trib, 4)
     # Carga muerta no estructural DW (pavimento + pretiles/barreras repartidos entre vigas)
     q_dw_per_girder_kN_m = round(wearing_kPa * b_trib + barrier_total_kN_m / n_girders, 4)
 
-    # Identificar coordenadas X de los nudos de las vigas para repartir ejes del vehiculo
+    # Identificar coordenadas X de los nudos de las vigas para localizar el tramo de viga L{ix}_{ig}
     x_coords = sorted({round(float(j["x"]), 6) for j in joints})
+    # Offset infinitesimal junto al apoyo izquierdo (x = 0+) para evaluar el cortante maximo en viga
+    # sin que la carga puntual caiga exactamente sobre el nudo coaccionado N0_* (condensacion nodal).
+    support_shear_offset_m = round(min(0.05, 0.01 * (x_coords[1] - x_coords[0])), 6)
+
+    def _map_x_to_segment(x_pos: float) -> tuple[int, float] | None:
+        """Devuelve (ix, dist_local_m) del tramo longitudinal [x_ix, x_{ix+1}] que contiene x_pos."""
+        if x_pos < x_coords[0] - 1e-6 or x_pos > x_coords[-1] + 1e-6:
+            return None
+        x_clamped = max(x_coords[0], min(x_coords[-1], x_pos))
+        for idx in range(len(x_coords) - 1):
+            x_left = x_coords[idx]
+            x_right = x_coords[idx + 1]
+            if x_left - 1e-9 <= x_clamped <= x_right + 1e-9:
+                d_local = max(0.0, min(x_right - x_left, x_clamped - x_left))
+                return idx, round(d_local, 6)
+        return None
 
     def _lump_axle_to_x_nodes(x_pos: float, total_axle_kN: float) -> list[tuple[float, float]]:
         """Reparte una carga de eje en x_pos hacia los nudos transversales adyacentes por ley de palanca."""
@@ -574,22 +678,86 @@ def _compute_grillage_loads(
         return []
 
     if norma == "EN_1991_2":
-        lm1 = LM1(n_lanes=n_lanes)
-        M_env_kNm, V_env_kN = traffic_envelope_lm1(span_length, n_lanes=n_lanes)
-        # Sobrecarga uniforme UDL total de los carriles LM1 + area remanente
-        rem_width = max(0.0, width_m - n_lanes * lm1.lane_width)
-        udl_total_kN_m = sum(lm1.udl_per_lane_kN_per_m()) + rem_width * 2.5
+        lm1 = LM1(n_lanes=n_lanes, lane_width=float(lane_layout["notional_lane_width_m"]))
+        M_env_kNm, V_env_kN = traffic_envelope_lm1(
+            span_length, n_lanes=n_lanes, lane_width=lm1.lane_width
+        )
+        rem_width = max(0.0, round(width_m - n_lanes * lm1.lane_width, 6))
+        udl_lanes_kN_m = lm1.udl_per_lane_kN_per_m()
+        ts_lanes_kN = lm1.tandem_axles_kN()
+        q_rem_kN_m = round(rem_width * 2.5, 6)
+        udl_total_kN_m = round(sum(udl_lanes_kN_m) + q_rem_kN_m, 6)
         q_lane_per_girder_kN_m = round(udl_total_kN_m / n_girders, 4)
+
+        # Posicion transversal mas excentrica (EN 1991-2 §4.2.4):
+        # Carril 1 adyacente al borde y=0 -> centro en y_1 = w_l/2; Carril k en (k - 0.5)*w_l;
+        # Area remanente adyacente al borde opuesto [n_lanes*w_l, width_m].
+        lane_strips_detail: list[dict[str, Any]] = []
+        q_lane_by_girder_raw = [0.0] * n_girders
+        ts_axle_by_girder_raw = [0.0] * n_girders
+        for k_idx in range(n_lanes):
+            y_start = round(k_idx * lm1.lane_width, 6)
+            y_end = round((k_idx + 1) * lm1.lane_width, 6)
+            y_c = round(0.5 * (y_start + y_end), 6)
+            etas = courbon_transverse_factors(y_girders, y_c)
+            q_k = udl_lanes_kN_m[k_idx]
+            Q_k = ts_lanes_kN[k_idx]
+            for ig in range(n_girders):
+                q_lane_by_girder_raw[ig] += q_k * etas[ig]
+                ts_axle_by_girder_raw[ig] += Q_k * etas[ig]
+            lane_strips_detail.append({
+                "strip_id": f"LANE_{k_idx + 1}",
+                "kind": "notional_lane",
+                "lane_number": k_idx + 1,
+                "y_start_m": y_start,
+                "y_end_m": y_end,
+                "width_m": round(y_end - y_start, 6),
+                "y_centroid_m": y_c,
+                "q_ik_kPa": round(q_k / lm1.lane_width, 4),
+                "udl_kN_m": round(q_k, 4),
+                "ts_axle_kN": round(Q_k, 4),
+                "courbon_factors": [round(e, 6) for e in etas],
+            })
+        if rem_width > 1e-6:
+            y_start_r = round(n_lanes * lm1.lane_width, 6)
+            y_end_r = width_m
+            y_c_r = round(0.5 * (y_start_r + y_end_r), 6)
+            etas_r = courbon_transverse_factors(y_girders, y_c_r)
+            for ig in range(n_girders):
+                q_lane_by_girder_raw[ig] += q_rem_kN_m * etas_r[ig]
+            lane_strips_detail.append({
+                "strip_id": "REMAINING_AREA",
+                "kind": "remaining_area",
+                "lane_number": None,
+                "y_start_m": y_start_r,
+                "y_end_m": y_end_r,
+                "width_m": rem_width,
+                "y_centroid_m": y_c_r,
+                "q_rk_kPa": 2.5,
+                "udl_kN_m": q_rem_kN_m,
+                "ts_axle_kN": 0.0,
+                "courbon_factors": [round(e, 6) for e in etas_r],
+            })
+
         # Tandem System TS: dos ejes separados 1.20 m
-        ts_axle_total_kN = sum(lm1.tandem_axles_kN())
+        ts_axle_total_kN = round(sum(ts_lanes_kN), 4)
         axles_kN = [ts_axle_total_kN, ts_axle_total_kN]
+        axles_V_kN = list(axles_kN)
+        axle_share_by_girder = [
+            (ts_axle_by_girder_raw[ig] / ts_axle_total_kN) if ts_axle_total_kN > 0 else (1.0 / n_girders)
+            for ig in range(n_girders)
+        ]
         spacings_m = [1.20]
         impact_factor = 1.0  # EN 1991-2 ya incluye amplificacion dinamica en LM1
         traffic_code = "EN_1991_2_LM1"
         # Posicion critica de Barre para M+ (EN 1991-2 TS, a=1.20 m): x_c = L/2 - a/4 = L/2 - 0.30 m
         axle_positions_M = [span_length / 2.0 - 0.30, span_length / 2.0 + 0.90]
-        # Posicion critica para Vmax junto al apoyo: primer eje en x = 0, segundo en x = 1.20 m
-        axle_positions_V = [0.0, min(span_length, 1.20)]
+        # Posicion critica para Vmax junto al apoyo: primer eje en x = 0+ (support_shear_offset_m),
+        # segundo en x = 0+ + 1.20 m para que el cortante se transmita integramente por las vigas L0_*.
+        axle_positions_V = [
+            support_shear_offset_m,
+            min(span_length, support_shear_offset_m + 1.20),
+        ]
         combos_spec = [
             {
                 "name": "ULS_STR",
@@ -630,24 +798,53 @@ def _compute_grillage_loads(
         traffic_code = "AASHTO_LRFD_HL93"
         # Factor de presencia multiple AASHTO LRFD Tabla 3.6.1.1.2-1 (m=1.20 para 1 carril, 1.00 para 2)
         mpf = 1.20 if n_lanes == 1 else (1.00 if n_lanes == 2 else 0.85)
-        q_lane_per_girder_kN_m = round((HL93_LANE_LOAD_KN_M * n_lanes * mpf) / n_girders, 4)
+        w_lane_aashto = float(lane_layout["notional_lane_width_m"])
+        rem_width = float(lane_layout["remaining_width_m"])
+        udl_total_kN_m = round(HL93_LANE_LOAD_KN_M * n_lanes * mpf, 6)
+        q_lane_per_girder_kN_m = round(udl_total_kN_m / n_girders, 4)
+
+        lane_strips_detail = []
+        q_lane_by_girder_raw = [0.0] * n_girders
+        veh_share_raw = [0.0] * n_girders
+        for k_idx in range(n_lanes):
+            y_start = round(k_idx * w_lane_aashto, 6)
+            y_end = round((k_idx + 1) * w_lane_aashto, 6)
+            y_c = round(0.5 * (y_start + y_end), 6)
+            etas = courbon_transverse_factors(y_girders, y_c)
+            q_k = HL93_LANE_LOAD_KN_M * mpf
+            for ig in range(n_girders):
+                q_lane_by_girder_raw[ig] += q_k * etas[ig]
+                veh_share_raw[ig] += etas[ig] / n_lanes
+            lane_strips_detail.append({
+                "strip_id": f"DESIGN_LANE_{k_idx + 1}",
+                "kind": "design_lane",
+                "lane_number": k_idx + 1,
+                "y_start_m": y_start,
+                "y_end_m": y_end,
+                "width_m": round(y_end - y_start, 6),
+                "y_centroid_m": y_c,
+                "udl_kN_m": round(q_k, 4),
+                "courbon_factors": [round(e, 6) for e in etas],
+            })
+        axle_share_by_girder = veh_share_raw
+
         # Camion de diseno HS-20 amplificado por impacto IM y numero de carriles * mpf
         scale_veh = impact_factor * n_lanes * mpf
         axles_kN = [round(p * scale_veh, 4) for p in TRUCK_AXLES_kN]
         spacings_m = list(TRUCK_AXLE_SPACINGS_m)
-        # Posicion de Barre para camion HS-20: eje central de 145 kN en L/2 -> ejes a L/2 - 4.3, L/2, L/2 + 4.3
+        # Posicion de Barre para camion HS-20: eje central de 145 kN en L/2 -> ejes a L/2 - 4.27, L/2, L/2 + 4.27
         axle_positions_M = [
             max(0.0, span_length / 2.0 - spacings_m[0]),
             span_length / 2.0,
             min(span_length, span_length / 2.0 + spacings_m[1]),
         ]
-        # Posicion critica de cortante en apoyo x=0: eje pesado de 145 kN en x=0, siguiente en 4.3 m, delantero en 8.6 m
+        # Posicion critica de cortante junto al apoyo x=0+: eje pesado trasero en x=0+, siguiente en 0+ + 4.27 m, delantero en 0+ + 8.54 m
         axle_positions_V = [
-            0.0,
-            min(span_length, spacings_m[1]),
-            min(span_length, spacings_m[0] + spacings_m[1]),
+            support_shear_offset_m,
+            min(span_length, support_shear_offset_m + spacings_m[1]),
+            min(span_length, support_shear_offset_m + spacings_m[0] + spacings_m[1]),
         ]
-        # En Vmax el eje en x=0 es el trasero de 145 kN
+        # En Vmax el eje en x=0+ es el trasero de 145 kN
         axles_V_kN = [axles_kN[2], axles_kN[1], axles_kN[0]]
         combos_spec = [
             {
@@ -682,26 +879,69 @@ def _compute_grillage_loads(
             },
         ]
 
-    if norma == "EN_1991_2":
-        axles_V_kN = list(axles_kN)
+    q_lane_by_girder_kN_m = {
+        ig: round(q_lane_by_girder_raw[ig], 6) for ig in range(n_girders)
+    }
+    axle_share_by_girder_dict = {
+        ig: round(axle_share_by_girder[ig], 6) for ig in range(n_girders)
+    }
 
-    # Construir cargas puntuales equivalentes en nudos para LIVE_VEHICLE_M y LIVE_VEHICLE_V
-    # El emparrillado con diafragmas transversales distribuye transversalmente las cargas aplicadas en las vigas.
+    # Construir cargas puntuales exactas sobre las barras longitudinales L{ix}_{ig}
+    # (sin condensacion nodal sobre los apoyos N0_*).
+    frame_point_loads_M: list[dict[str, Any]] = []
+    for axle_idx, (x_ax, p_total) in enumerate(zip(axle_positions_M, axles_kN), start=1):
+        seg = _map_x_to_segment(x_ax)
+        if seg is None:
+            continue
+        ix_seg, dist_local = seg
+        for ig in range(n_girders):
+            p_girder = round(p_total * axle_share_by_girder[ig], 6)
+            frame_point_loads_M.append({
+                "frame_id": f"L{ix_seg}_{ig}",
+                "girder_index": ig,
+                "axle_index": axle_idx,
+                "x_global_m": round(x_ax, 6),
+                "dist_local_m": dist_local,
+                "load_kN": p_girder,
+                "fz_global_kN": round(-p_girder, 6),
+            })
+
+    frame_point_loads_V: list[dict[str, Any]] = []
+    for axle_idx, (x_ax, p_total) in enumerate(zip(axle_positions_V, axles_V_kN), start=1):
+        seg = _map_x_to_segment(x_ax)
+        if seg is None:
+            continue
+        ix_seg, dist_local = seg
+        for ig in range(n_girders):
+            p_girder = round(p_total * axle_share_by_girder[ig], 6)
+            frame_point_loads_V.append({
+                "frame_id": f"L{ix_seg}_{ig}",
+                "girder_index": ig,
+                "axle_index": axle_idx,
+                "x_global_m": round(x_ax, 6),
+                "dist_local_m": dist_local,
+                "load_kN": p_girder,
+                "fz_global_kN": round(-p_girder, 6),
+            })
+
+    # Reacciones equivalentes en nudos (solo como referencia analitica en meta, con reparto excentrico)
     nodal_loads_M: dict[str, float] = {}
     for x_ax, p_total in zip(axle_positions_M, axles_kN):
         for x_node, p_lumped in _lump_axle_to_x_nodes(x_ax, p_total):
-            p_per_girder = p_lumped / n_girders
             for j in joints:
                 if abs(float(j["x"]) - x_node) < 1e-4:
-                    nodal_loads_M[j["id"]] = round(nodal_loads_M.get(j["id"], 0.0) - p_per_girder, 4)
+                    ig_j = int(j["id"].split("_")[1])
+                    p_girder = p_lumped * axle_share_by_girder[ig_j]
+                    nodal_loads_M[j["id"]] = round(nodal_loads_M.get(j["id"], 0.0) - p_girder, 4)
 
     nodal_loads_V: dict[str, float] = {}
     for x_ax, p_total in zip(axle_positions_V, axles_V_kN):
         for x_node, p_lumped in _lump_axle_to_x_nodes(x_ax, p_total):
-            p_per_girder = p_lumped / n_girders
             for j in joints:
                 if abs(float(j["x"]) - x_node) < 1e-4:
-                    nodal_loads_V[j["id"]] = round(nodal_loads_V.get(j["id"], 0.0) - p_per_girder, 4)
+                    ig_j = int(j["id"].split("_")[1])
+                    p_girder = p_lumped * axle_share_by_girder[ig_j]
+                    nodal_loads_V[j["id"]] = round(nodal_loads_V.get(j["id"], 0.0) - p_girder, 4)
 
     long_frame_ids = [f["id"] for f in frames if f["id"].startswith("L")]
 
@@ -709,9 +949,24 @@ def _compute_grillage_loads(
         "traffic_code": traffic_code,
         "impact_factor_IM": impact_factor,
         "n_lanes": n_lanes,
+        "notional_lanes_detail": {
+            **lane_layout,
+            "strips": lane_strips_detail,
+        },
+        "transverse_distribution": {
+            "method": "Courbon (reparto transversal excéntrico con carriles ordenados desde borde y=0)",
+            "y_girders_m": y_girders,
+            "y_centroid_deck_m": round(sum(y_girders) / n_girders, 6),
+            "q_lane_by_girder_kN_m": q_lane_by_girder_kN_m,
+            "q_lane_total_kN_m": round(sum(q_lane_by_girder_raw), 6),
+            "vehicle_axle_share_by_girder": axle_share_by_girder_dict,
+            "governing_exterior_girder": 0,
+        },
+        "support_shear_offset_m": support_shear_offset_m,
         "q_slab_per_girder_kN_m": q_slab_per_girder_kN_m,
         "q_dw_per_girder_kN_m": q_dw_per_girder_kN_m,
         "q_lane_per_girder_kN_m": q_lane_per_girder_kN_m,
+        "q_lane_by_girder_kN_m": q_lane_by_girder_kN_m,
         "vehicle_axles_M_kN": axles_kN,
         "vehicle_positions_M_m": [round(x, 4) for x in axle_positions_M],
         "vehicle_axles_V_kN": axles_V_kN,
@@ -719,6 +974,8 @@ def _compute_grillage_loads(
         "analytical_envelope_M_kNm": round(M_env_kNm, 3),
         "analytical_envelope_V_kN": round(V_env_kN, 3),
         "longitudinal_frames_loaded": long_frame_ids,
+        "frame_point_loads_LIVE_VEHICLE_M": frame_point_loads_M,
+        "frame_point_loads_LIVE_VEHICLE_V": frame_point_loads_V,
         "nodal_loads_LIVE_VEHICLE_M_Fz_kN": nodal_loads_M,
         "nodal_loads_LIVE_VEHICLE_V_Fz_kN": nodal_loads_V,
         "combinations": combos_spec,
@@ -728,8 +985,9 @@ def _compute_grillage_loads(
 MODEL_LIMITATIONS: tuple[str, ...] = (
     "El tren de cargas de tráfico (HL-93 / LM1) se introduce mediante casos estáticos en "
     "posiciones longitudinales críticas discretas (centro de vano por teorema de Barré para M+ "
-    "y apoyo x=0 para Vmax) con condensación por ley de palanca a los nudos del emparrillado, "
-    "no como análisis de superficie de influencia 3D con barrido continuo de pasos de carga.",
+    "y x=0+ junto al apoyo para Vmax) con aplicación directa sobre barra (FrameObj.SetLoadPoint) "
+    "y distribución transversal excéntrica de Courbon hacia el borde y=0, no como barrido "
+    "continuo de pasos móviles sobre superficie de influencia 3D.",
     "La losa superior de hormigón se introduce como masa/carga permanente tributaria sobre las "
     "vigas longitudinales y rigidez transversal concentrada en los diafragmas; no se modela acción "
     "mixta viga-losa ni desfase de cortante (shear lag) mediante elementos Shell acoplados.",
@@ -927,12 +1185,33 @@ def grillage_model(
     )
 
 
+def _mat_enum(mat_code: int) -> Any:
+    member = "Steel" if int(mat_code) == 1 else "Concrete"
+    ev = csi_enum("eMatType", member)
+    return int(mat_code) if ev is None else ev
+
+
+def _load_pat_enum(pat_code: int) -> Any:
+    mapping = {1: "Dead", 2: "SuperDead", 3: "Live"}
+    member = mapping.get(int(pat_code), "Other")
+    ev = csi_enum("eLoadPatternType", member)
+    return int(pat_code) if ev is None else ev
+
+
+def _cname_type_enum(code: int = 0) -> Any:
+    ev = csi_enum("eCNameType", "LoadCase")
+    return int(code) if ev is None else ev
+
+
 def _register_material_and_sections_oapi(sap_model: Any, meta: dict[str, Any]) -> None:
     """Registra explicita y verificadamente el material y las secciones en SapModel."""
     mat = meta["material"]
     mat_name = mat["name"]
     if hasattr(sap_model, "PropMaterial"):
-        _check_ret("SetMaterial", sap_model.PropMaterial.SetMaterial(mat_name, int(mat["sap_mat_type"])))
+        _check_ret(
+            "SetMaterial",
+            sap_model.PropMaterial.SetMaterial(mat_name, _mat_enum(int(mat["sap_mat_type"]))),
+        )
         _check_ret(
             "SetMPIsotropic",
             sap_model.PropMaterial.SetMPIsotropic(
@@ -972,39 +1251,90 @@ def _register_material_and_sections_oapi(sap_model: Any, meta: dict[str, Any]) -
                 )
 
 
+def _add_or_update_load_pattern(
+    sap_model: Any, name: str, pat_code: int, sw_mult: float
+) -> None:
+    """Registra un patron de carga en SAP2000 verificando retorno (idempotente para DEAD)."""
+    lp = sap_model.LoadPatterns
+    ret = lp.Add(name, _load_pat_enum(pat_code), float(sw_mult), True)
+    rc = ret[0] if isinstance(ret, (tuple, list)) and ret else ret
+    if rc != 0 and name == "DEAD" and hasattr(lp, "SetSelfWTMultiplier"):
+        _check_ret("LoadPatterns.SetSelfWTMultiplier", lp.SetSelfWTMultiplier(name, float(sw_mult)))
+        return
+    _check_ret("LoadPatterns.Add", ret)
+
+
 def _apply_bridge_loads_and_combos_oapi(sap_model: Any, meta: dict[str, Any]) -> None:
     """Crea patrones de carga (DEAD, DW, LIVE_LANE, LIVE_VEHICLE_M, LIVE_VEHICLE_V),
-    asigna cargas distribuidas y puntuales de ejes y define combinaciones normativas.
+    asigna cargas distribuidas (con reparto transversal excentrico Courbon en LIVE_LANE)
+    y cargas puntuales de ejes sobre barra (FrameObj.SetLoadPoint, Dir=10 Gravity)
+    y define combinaciones normativas.
     """
     loads = meta["loads_summary"]
     if hasattr(sap_model, "LoadPatterns"):
         # eLoadPatternType: 1=Dead, 2=SuperDead, 3=Live
-        _check_ret("LoadPatterns.Add", sap_model.LoadPatterns.Add("DEAD", 1, 1.0, True))
-        _check_ret("LoadPatterns.Add", sap_model.LoadPatterns.Add("DW", 2, 0.0, True))
-        _check_ret("LoadPatterns.Add", sap_model.LoadPatterns.Add("LIVE_LANE", 3, 0.0, True))
-        _check_ret("LoadPatterns.Add", sap_model.LoadPatterns.Add("LIVE_VEHICLE_M", 3, 0.0, True))
-        _check_ret("LoadPatterns.Add", sap_model.LoadPatterns.Add("LIVE_VEHICLE_V", 3, 0.0, True))
+        _add_or_update_load_pattern(sap_model, "DEAD", 1, 1.0)
+        _add_or_update_load_pattern(sap_model, "DW", 2, 0.0)
+        _add_or_update_load_pattern(sap_model, "LIVE_LANE", 3, 0.0)
+        _add_or_update_load_pattern(sap_model, "LIVE_VEHICLE_M", 3, 0.0)
+        _add_or_update_load_pattern(sap_model, "LIVE_VEHICLE_V", 3, 0.0)
 
     if hasattr(sap_model, "FrameObj") and hasattr(sap_model.FrameObj, "SetLoadDistributed"):
         q_slab = float(loads["q_slab_per_girder_kN_m"])
         q_dw = float(loads["q_dw_per_girder_kN_m"])
-        q_lane = float(loads["q_lane_per_girder_kN_m"])
-        # Dir=6 en SAP2000 OAPI es Gravity (hacia -Z global con valor positivo, o Dir=10 Gravity)
+        q_lane_by_girder = loads.get("q_lane_by_girder_kN_m", {})
+        q_lane_uniform = float(loads["q_lane_per_girder_kN_m"])
+        # Dir=10 en SAP2000 OAPI es Gravity (hacia -Z global con valor positivo)
         for fid in loads["longitudinal_frames_loaded"]:
-            _check_ret(
-                "SetLoadDistributed",
-                sap_model.FrameObj.SetLoadDistributed(fid, "DEAD", 1, 6, 0.0, 1.0, q_slab, q_slab),
+            ig = int(fid.split("_")[1])
+            q_lane_ig = float(
+                q_lane_by_girder.get(ig, q_lane_by_girder.get(str(ig), q_lane_uniform))
             )
             _check_ret(
                 "SetLoadDistributed",
-                sap_model.FrameObj.SetLoadDistributed(fid, "DW", 1, 6, 0.0, 1.0, q_dw, q_dw),
+                sap_model.FrameObj.SetLoadDistributed(fid, "DEAD", 1, 10, 0.0, 1.0, q_slab, q_slab),
             )
             _check_ret(
                 "SetLoadDistributed",
-                sap_model.FrameObj.SetLoadDistributed(fid, "LIVE_LANE", 1, 6, 0.0, 1.0, q_lane, q_lane),
+                sap_model.FrameObj.SetLoadDistributed(fid, "DW", 1, 10, 0.0, 1.0, q_dw, q_dw),
+            )
+            _check_ret(
+                "SetLoadDistributed",
+                sap_model.FrameObj.SetLoadDistributed(fid, "LIVE_LANE", 1, 10, 0.0, 1.0, q_lane_ig, q_lane_ig),
             )
 
-    if hasattr(sap_model, "PointObj") and hasattr(sap_model.PointObj, "SetLoadForce"):
+    if hasattr(sap_model, "FrameObj") and hasattr(sap_model.FrameObj, "SetLoadPoint"):
+        for pt in loads.get("frame_point_loads_LIVE_VEHICLE_M", []):
+            _check_ret(
+                "SetLoadPoint",
+                sap_model.FrameObj.SetLoadPoint(
+                    pt["frame_id"],
+                    "LIVE_VEHICLE_M",
+                    1,
+                    10,
+                    float(pt["dist_local_m"]),
+                    float(pt["load_kN"]),
+                    "Global",
+                    False,
+                    False,
+                ),
+            )
+        for pt in loads.get("frame_point_loads_LIVE_VEHICLE_V", []):
+            _check_ret(
+                "SetLoadPoint",
+                sap_model.FrameObj.SetLoadPoint(
+                    pt["frame_id"],
+                    "LIVE_VEHICLE_V",
+                    1,
+                    10,
+                    float(pt["dist_local_m"]),
+                    float(pt["load_kN"]),
+                    "Global",
+                    False,
+                    False,
+                ),
+            )
+    elif hasattr(sap_model, "PointObj") and hasattr(sap_model.PointObj, "SetLoadForce"):
         for jid, fz_kN in loads["nodal_loads_LIVE_VEHICLE_M_Fz_kN"].items():
             _check_ret(
                 "SetLoadForce",
@@ -1017,6 +1347,7 @@ def _apply_bridge_loads_and_combos_oapi(sap_model: Any, meta: dict[str, Any]) ->
             )
 
     if hasattr(sap_model, "RespCombo"):
+        cname_type = _cname_type_enum(0)
         for combo in loads["combinations"]:
             cname = combo["name"]
             # ComboType=0 -> Linear Additive
@@ -1025,7 +1356,7 @@ def _apply_bridge_loads_and_combos_oapi(sap_model: Any, meta: dict[str, Any]) ->
                 # eCNameType=0 -> LoadCase
                 _check_ret(
                     "RespCombo.SetCaseList",
-                    sap_model.RespCombo.SetCaseList(cname, 0, case_name, float(factor)),
+                    sap_model.RespCombo.SetCaseList(cname, cname_type, case_name, float(factor)),
                 )
 
 
@@ -1132,10 +1463,13 @@ __all__ = [
     "UNIMPLEMENTED_CHECKS",
     "bridge_spec_from_encargo",
     "build_bridge_grillage",
+    "courbon_transverse_factors",
     "default_bridge_material",
+    "design_lanes_aashto_lrfd",
     "expected_grillage_counts",
     "generate_grillage",
     "grillage_model",
+    "notional_lanes_en1991_2",
     "rectangular_concrete_section_props",
     "section_props_from_catalog",
     "select_bridge_sections",

@@ -122,6 +122,7 @@ class _RecordingSapModel:
         self.load_patterns = []
         self.dist_loads = []
         self.point_loads = []
+        self.frame_point_loads = []
         self.combos = []
         self.combo_cases = []
 
@@ -155,7 +156,7 @@ class _RecordingSapModel:
         class _PointObj:
             def AddCartesian(self, x, y, z, name, uname):
                 builder.points.append((x, y, z, name, uname))
-                return _ret("AddCartesian")
+                return (_ret("AddCartesian"), uname)
 
             def SetRestraint(self, name, vals):
                 builder.restraints.append((name, list(vals)))
@@ -168,11 +169,15 @@ class _RecordingSapModel:
         class _FrameObj:
             def AddByPoint(self, ji, jj, prop, section, name):
                 builder.frames.append((ji, jj, section, name))
-                return _ret("AddByPoint")
+                return (_ret("AddByPoint"), name)
 
             def SetLoadDistributed(self, name, pat, my_type, dir_, dist1, dist2, val1, val2, csys="Global", rel=True, replace=True, item_type=0):
                 builder.dist_loads.append((name, pat, my_type, dir_, dist1, dist2, val1, val2))
                 return _ret("SetLoadDistributed")
+
+            def SetLoadPoint(self, name, pat, my_type, dir_, dist, val, csys="Global", rel=False, replace=False, item_type=0):
+                builder.frame_point_loads.append((name, pat, my_type, dir_, dist, val, csys, rel, replace))
+                return _ret("SetLoadPoint")
 
         class _LoadPatterns:
             def Add(self, name, my_type, sw_mult=0.0, add_case=True):
@@ -254,7 +259,7 @@ def test_build_acepta_sapmodel_directo():
         "AddByPoint",
         "LoadPatterns.Add",
         "SetLoadDistributed",
-        "SetLoadForce",
+        "SetLoadPoint",
         "RespCombo.Add",
         "RespCombo.SetCaseList",
     ],
@@ -401,9 +406,10 @@ def test_encargo_puente_30m_genera_especificacion_material_secciones_cargas_y_li
     pats = {p[0] for p in sap.load_patterns}
     assert {"DEAD", "DW", "LIVE_LANE", "LIVE_VEHICLE_M", "LIVE_VEHICLE_V"}.issubset(pats)
     assert len(sap.dist_loads) > 0
-    assert len(sap.point_loads) > 0
-    # Todas las cargas verticales gravitatorias deben ser negativas en Z global (< 0)
-    assert all(pl[2][2] < 0 for pl in sap.point_loads)
+    assert len(sap.frame_point_loads) > 0
+    # Todas las cargas verticales gravitatorias usan Dir=10 (Gravity, -Z global con valor > 0)
+    assert all(dl[3] == 10 and dl[6] > 0 for dl in sap.dist_loads)
+    assert all(pl[3] == 10 and pl[5] > 0 for pl in sap.frame_point_loads)
 
     # Combinaciones ELU y ELS creadas
     combos = {c[0] for c in sap.combos}
@@ -437,3 +443,118 @@ def test_encargo_puente_30m_aashto_hl93():
     combos = {c[0] for c in sap.combos}
     assert "ULS_STRENGTH_I" in combos
     assert "SLS_SERVICE_II" in combos
+
+
+# --------------------------------------------------------------------------- #
+# Correcciones previas Tarea 3 (Autorizacion Condicionada):
+# 1. Carriles nocionales LM1 EN 1991-2 Tabla 4.1 (3 carriles de 3 m + 1 m rem).
+# 2. Distribucion transversal excentrica (Courbon) hacia la viga exterior.
+# 3. Cargas puntuales en barras (SetLoadPoint) proximas al apoyo sin condensar
+#    sobre el nudo coaccionado N0_*.
+# --------------------------------------------------------------------------- #
+def test_lm1_10m_tres_carriles_nocionales_y_area_remanente():
+    from jmworkbench.encargo import interpretar_encargo
+    from bridgejm.integration.grillage_model import (
+        bridge_spec_from_encargo,
+        build_bridge_grillage,
+        notional_lanes_en1991_2,
+    )
+
+    nl = notional_lanes_en1991_2(10.0)
+    assert nl["n_notional_lanes"] == 3
+    assert nl["notional_lane_width_m"] == pytest.approx(3.0)
+    assert nl["remaining_width_m"] == pytest.approx(1.0)
+
+    enc = interpretar_encargo(
+        "Diseña un puente de 30 m de luz que cumpla la normativa aplicable.",
+        supuestos={
+            "norma": "EN 1991-2",
+            "uso": "carretera",
+            "ancho_tablero_o_carriles": "ancho de tablero 10 m",
+            "material": "acero",
+            "apoyos": "simplemente apoyado",
+            "galibo": "gálibo de 5,5 m",
+            "acciones": "LM1",
+        },
+    )
+    spec = bridge_spec_from_encargo(enc)
+    assert spec.n_lanes == 3
+
+    summary = build_bridge_grillage(None, spec=spec, preview_only=True)
+    loads = summary["meta"]["loads_summary"]
+    detail = loads["notional_lanes_detail"]
+    assert detail["n_notional_lanes"] == 3
+    assert detail["notional_lane_width_m"] == pytest.approx(3.0)
+    assert detail["remaining_width_m"] == pytest.approx(1.0)
+    strips = detail["strips"]
+    assert len(strips) == 4  # 3 carriles nocionales + 1 area remanente
+    assert [s["strip_id"] for s in strips] == ["LANE_1", "LANE_2", "LANE_3", "REMAINING_AREA"]
+    # Suma de UDL = 27.0 + 7.5 + 7.5 + 2.5 = 44.5 kN/m
+    assert sum(s["udl_kN_m"] for s in strips) == pytest.approx(44.5)
+    # Suma de TS por eje = 300 + 200 + 100 = 600 kN/eje (2 ejes -> 1200 kN total)
+    assert loads["vehicle_axles_M_kN"] == [pytest.approx(600.0), pytest.approx(600.0)]
+
+
+def test_distribucion_transversal_excentrica_courbon():
+    from bridgejm.integration.grillage_model import (
+        build_bridge_grillage,
+        courbon_transverse_factors,
+    )
+
+    y_girders = [0.0, 10.0 / 3.0, 20.0 / 3.0, 10.0]
+    for y_load in (1.5, 4.5, 7.5, 9.5):
+        etas = courbon_transverse_factors(y_girders, y_load)
+        # Conservacion de fuerza vertical y de momento respecto a y=0
+        assert sum(etas) == pytest.approx(1.0)
+        assert sum(e * y for e, y in zip(etas, y_girders)) == pytest.approx(y_load)
+
+    summary = build_bridge_grillage(
+        None, L=30.0, W=10.0, n_girders=4, n_diaphragms=3, preview_only=True
+    )
+    td = summary["meta"]["loads_summary"]["transverse_distribution"]
+    q_by_g = td["q_lane_by_girder_kN_m"]
+    sh_by_g = td["vehicle_axle_share_by_girder"]
+    # La viga exterior ig=0 recibe estrictamente mas carga que las interiores y opuesta
+    assert q_by_g[0] > q_by_g[1] > q_by_g[2] > q_by_g[3]
+    assert sh_by_g[0] > sh_by_g[1] > sh_by_g[2] > sh_by_g[3]
+    assert sum(sh_by_g.values()) == pytest.approx(1.0)
+
+
+def test_cargas_puntuales_en_barras_proximas_al_apoyo_sin_condensacion_nodal():
+    from jmworkbench.encargo import interpretar_encargo
+    from bridgejm.integration.grillage_model import (
+        bridge_spec_from_encargo,
+        build_bridge_grillage,
+    )
+
+    enc = interpretar_encargo(
+        "Diseña un puente de 30 m de luz.",
+        supuestos={
+            "norma": "EN 1991-2",
+            "uso": "carretera",
+            "ancho_tablero_o_carriles": "ancho de tablero 10 m",
+            "material": "acero",
+            "apoyos": "simplemente apoyado",
+            "galibo": "gálibo de 5,5 m",
+            "acciones": "LM1",
+        },
+    )
+    spec = bridge_spec_from_encargo(enc)
+    sap = _RecordingSapModel()
+    summary = build_bridge_grillage(sap, spec=spec)
+    loads = summary["meta"]["loads_summary"]
+
+    # Ninguna carga puntual se condensa mediante PointObj.SetLoadForce sobre nudos de apoyo
+    assert len(sap.point_loads) == 0
+    # Se aplican 2 ejes * 4 vigas = 8 cargas puntuales en barra para M y 8 para V
+    pts_M = [p for p in sap.frame_point_loads if p[1] == "LIVE_VEHICLE_M"]
+    pts_V = [p for p in sap.frame_point_loads if p[1] == "LIVE_VEHICLE_V"]
+    assert len(pts_M) == 8
+    assert len(pts_V) == 8
+    # En LIVE_VEHICLE_V los dos ejes caen dentro del primer tramo L0_* con distancia local > 0
+    # (primer eje en x = 0.05 m > 0, segundo en x = 1.25 m) y Replace=False para acumular ambos ejes
+    assert all(p[0].startswith("L0_") for p in pts_V)
+    assert all(p[4] > 0.0 for p in pts_V)
+    assert all(p[8] is False for p in pts_V)  # Replace=False
+    assert sum(p[5] for p in pts_V) == pytest.approx(sum(loads["vehicle_axles_V_kN"]))
+    assert sum(p[5] for p in pts_M) == pytest.approx(sum(loads["vehicle_axles_M_kN"]))
