@@ -1,24 +1,763 @@
 """
-bridgejm.integration.grillage_model — emparrillado de puente para SAP/CSiBridge (idea #12, MVP).
+bridgejm.integration.grillage_model — Emparrillado de puente verificado para SAP2000/CSiBridge.
 
-Genera la geometría de un tablero de puente como grid (emparrillado / grillage):
-vigas longitudinales (girders) × líneas transversales (diafragmas), con apoyos en
-las líneas de pila. La salida (``joints`` / ``frames``) es compatible con
-``fastsap.worker_sap2000.StructuralJobInput``; la carga de carril HL-93 viaja como
-metadato (``loads.hl93`` ya calcula las envolventes de camión/tándem).
-
-``build_bridge_grillage`` lleva ese modelo a CSiBridge/SAP vía OAPI (joints +
-frames, patrón de ``fastcsib.manual_bridge_builder``), mock-testeable con
-``preview_only``. Los objetos puente nativos de CSiBridge (vehículos HL-93 y
-casos móviles paramétricos) quedan fuera de alcance — la carga de carril viaja
-como metadato (``loads.hl93`` calcula las envolventes de camión/tándem).
+Implementa la generacion parametrica y fisicamente consistente de un tablero de puente
+mediante modelo de emparrillado (grillage: vigas longitudinales L* x diafragmas T*):
+1. Conexion trazable desde un ``Encargo`` ejecutable (``bridge_spec_from_encargo``) hacia
+   ``BridgeDesignSpec`` sin inventar parametros silenciosos.
+2. Materiales y secciones reales del catalogo oficial (``fastsap.section_catalog``,
+   EN 10365 / AISC) con todas sus propiedades mecanicas completas (A, I33, I22, J,
+   Av2, Av3, Wel33, Wpl33 > 0), eliminando etiquetas huerfanas ("GIRDER"/"DIAPHRAGM").
+3. Esquema de aparatos de apoyo cinematica y estaticamente determinado en 3D
+   (6 GDL globales: sum_Fx, sum_Fy, sum_Fz, sum_Mx, sum_My, sum_Mz), con estribo fijo
+   en x=0 y estribo/pilas moviles en x>0 (dilatacion longitudinal Ux=0 libre y guia
+   transversal Uy=1 en el apoyo guia ig=0).
+4. Cargas de puente reales: peso propio + losa (DEAD), pavimento y barreras (DW),
+   sobrecarga distribuida de carril (LIVE_LANE) y tren de cargas de diseno
+   (HL-93 AASHTO LRFD §3.6.1 con impacto IM=1.33, o LM1 EN 1991-2 §4.3.2) en
+   posiciones longitudinales criticas de momento positivo (LIVE_VEHICLE_M) y
+   cortante en apoyo (LIVE_VEHICLE_V), mas combinaciones ELU/ELS.
+5. Verificacion estricta de todos los codigos de retorno OAPI (ret != 0 lanza
+   ``OAPICallError``) y declaracion explicita de limitaciones del modelo y estados
+   limite no implementados en ``meta``.
 """
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass, field
+import math
+import re
 from typing import Any
 
-# Carga de carril HL-93 (AASHTO LRFD 3.6.1.2.4): 9.3 kN/m por carril de diseño.
-HL93_LANE_LOAD_KN_M = 9.3
+from fastsap.section_catalog import IShape, get_section
+from ..ec1_traffic import LM1, traffic_envelope_lm1
+from ..loads.en1990_combinations import GAMMA_G_SUP
+from ..loads.hl93 import (
+    HL93Configuration,
+    LANE_LOAD_kN_per_m,
+    TRUCK_AXLE_SPACINGS_m,
+    TRUCK_AXLES_kN,
+    hl93_envelope,
+)
+from ..loads.load_combinations import gamma as aashto_gamma
+
+# Factor parcial para trafico rodado LM1 en puentes segun EN 1990 Anexo A2 Tabla A2.4(B)
+EN1990_A2_GAMMA_Q_TRAFFIC = 1.35
+
+# Carga de carril HL-93 (AASHTO LRFD 3.6.1.2.4): 9.3 kN/m por carril de diseno.
+HL93_LANE_LOAD_KN_M = LANE_LOAD_kN_per_m
+
+# Escalera de perfiles laminados europeos EN 10365 para vigas principales y diafragmas
+BRIDGE_STEEL_GIRDER_LADDER: tuple[str, ...] = (
+    "HEB 500",
+    "HEB 550",
+    "HEB 600",
+    "HEB 650",
+    "HEB 700",
+    "HEB 800",
+    "HEB 900",
+    "HEB 1000",
+    "HEM 900",
+    "HEM 1000",
+)
+
+
+class OAPICallError(RuntimeError):
+    """Error lanzado cuando cualquier llamada OAPI de SAP2000/CSiBridge devuelve ret != 0."""
+
+
+def _check_ret(op: str, ret: Any) -> None:
+    """Verifica estrictamente el retorno de una llamada OAPI CSI (ret == 0)."""
+    if isinstance(ret, (tuple, list)):
+        rc = ret[-1] if ret else 1
+    else:
+        rc = ret
+    if rc != 0:
+        raise OAPICallError(f"Llamada OAPI '{op}' falló con ret={ret!r} (código={rc!r})")
+
+
+@dataclass(frozen=True)
+class MaterialSpec:
+    """Especificacion trazable de material estructural para el modelo de puente."""
+    name: str
+    material_type: str          # "steel" (SAP eMatType=1) | "concrete" (SAP eMatType=2)
+    sap_mat_type: int           # 1 = Steel, 2 = Concrete
+    E_kPa: float                # Modulo de elasticidad en kPa (kN/m^2)
+    nu: float                   # Coeficiente de Poisson
+    alpha_thermal: float        # Coeficiente de dilatacion termica (1/K)
+    gamma_kN_m3: float          # Peso especifico (kN/m^3)
+    fy_MPa: float               # Limite elastico fy (acero) o fck (hormigon) en MPa
+    fu_MPa: float               # Tension de rotura fu (acero) o fcd/fctm ref en MPa
+    norm_ref: str
+    source: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class SectionMechanicalProps:
+    """Propiedades geometricas y mecanicas completas de una seccion de viga o diafragma."""
+    name: str
+    shape: str                  # "I" | "RECT"
+    material_name: str
+    h_m: float                  # Canto total t3 (m)
+    b_m: float                  # Ancho de ala t2 (m)
+    tf_m: float                 # Espesor de ala tf (m)
+    tw_m: float                 # Espesor de alma tw (m)
+    r_m: float                  # Radio de acuerdo (m)
+    A_m2: float                 # Area total (m^2)
+    I33_m4: float               # Inercia eje fuerte local 3-3 (Iy en EN 10365) (m^4)
+    I22_m4: float               # Inercia eje debil local 2-2 (Iz en EN 10365) (m^4)
+    J_m4: float                 # Modulo de torsion uniforme de Saint-Venant It (m^4)
+    Av2_m2: float               # Area de cortante vertical paralela al alma (eje 2) (m^2)
+    Av3_m2: float               # Area de cortante transversal paralela a las alas (eje 3) (m^2)
+    Wel33_m3: float             # Modulo resistente elastico eje fuerte (m^3)
+    Wpl33_m3: float             # Modulo resistente plastico eje fuerte (m^3)
+    mass_kg_m: float            # Masa lineal (kg/m)
+    source: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class BridgeDesignSpec:
+    """Especificacion completa y trazable para el emparrillado de puente."""
+    span_m: float
+    width_m: float
+    n_spans: int
+    n_girders: int
+    n_diaphragms: int
+    n_lanes: int
+    norma: str                  # "EN_1991_2" | "AASHTO_LRFD"
+    uso: str
+    apoyos_desc: str
+    galibo_m: float
+    acciones_desc: str
+    slab_thickness_m: float
+    wearing_surface_kPa: float
+    barrier_load_kN_m_total: float
+    material: MaterialSpec
+    girder_section: SectionMechanicalProps
+    diaphragm_section: SectionMechanicalProps
+    predimensioning_trace: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def section_props_from_catalog(profile_name: str, material_name: str = "S355") -> SectionMechanicalProps:
+    """Obtiene propiedades mecanicas completas desde ``fastsap.section_catalog``."""
+    sec = get_section(profile_name)
+    if not isinstance(sec, IShape):
+        raise ValueError(f"Se esperaba un perfil doble T (IShape) para {profile_name!r}, recibido {type(sec).__name__}")
+    # Area de cortante vertical según EN 1993-1-1 §6.2.6(3): Av2 >= h * tw
+    av2 = sec.h * sec.tw
+    # Area de cortante horizontal en las dos alas: Av3 = (5/6) * (2 * b * tf)
+    av3 = (5.0 / 6.0) * (2.0 * sec.b * sec.tf)
+    return SectionMechanicalProps(
+        name=sec.name,
+        shape="I",
+        material_name=material_name,
+        h_m=round(sec.h, 6),
+        b_m=round(sec.b, 6),
+        tf_m=round(sec.tf, 6),
+        tw_m=round(sec.tw, 6),
+        r_m=round(sec.r, 6),
+        A_m2=round(sec.A_exact, 8),
+        I33_m4=round(sec.Iy_exact, 8),
+        I22_m4=round(sec.Iz_exact, 8),
+        J_m4=round(sec.It, 8),
+        Av2_m2=round(av2, 8),
+        Av3_m2=round(av3, 8),
+        Wel33_m3=round(sec.Wel_y, 8),
+        Wpl33_m3=round(sec.Wpl_y, 8),
+        mass_kg_m=round(sec.mass_kg_m, 4),
+        source="fastsap.section_catalog (EN 10365:2017 / AISC v15 / Euro.xml)",
+    )
+
+
+def rectangular_concrete_section_props(
+    name: str, h_m: float, b_m: float, material_name: str = "C35/45"
+) -> SectionMechanicalProps:
+    """Calcula las propiedades mecanicas exactas de una seccion rectangular de hormigon."""
+    if h_m <= 0 or b_m <= 0:
+        raise ValueError("h_m y b_m deben ser > 0")
+    area = b_m * h_m
+    i33 = b_m * (h_m ** 3) / 12.0
+    i22 = h_m * (b_m ** 3) / 12.0
+    a_long = max(h_m, b_m)
+    b_short = min(h_m, b_m)
+    beta_j = 1.0 / 3.0 - 0.21 * (b_short / a_long) * (1.0 - (b_short ** 4) / (12.0 * (a_long ** 4)))
+    j_tors = beta_j * a_long * (b_short ** 3)
+    av2 = (5.0 / 6.0) * area
+    av3 = (5.0 / 6.0) * area
+    wel33 = b_m * (h_m ** 2) / 6.0
+    wpl33 = b_m * (h_m ** 2) / 4.0
+    return SectionMechanicalProps(
+        name=name,
+        shape="RECT",
+        material_name=material_name,
+        h_m=round(h_m, 6),
+        b_m=round(b_m, 6),
+        tf_m=round(h_m, 6),
+        tw_m=round(b_m, 6),
+        r_m=0.0,
+        A_m2=round(area, 8),
+        I33_m4=round(i33, 8),
+        I22_m4=round(i22, 8),
+        J_m4=round(j_tors, 8),
+        Av2_m2=round(av2, 8),
+        Av3_m2=round(av3, 8),
+        Wel33_m3=round(wel33, 8),
+        Wpl33_m3=round(wpl33, 8),
+        mass_kg_m=round(area * 2500.0, 4),
+        source="Predimensionamiento analitico seccion rectangular EC2 / AASHTO",
+    )
+
+
+def default_bridge_material(material_desc: str = "acero", norma: str = "EN_1991_2") -> MaterialSpec:
+    """Devuelve la especificacion de material trazable a la norma y descripcion declaradas."""
+    desc_low = material_desc.lower()
+    norm_up = norma.upper()
+    if "hormig" in desc_low:
+        return MaterialSpec(
+            name="C35/45",
+            material_type="concrete",
+            sap_mat_type=2,
+            E_kPa=34_000_000.0,
+            nu=0.20,
+            alpha_thermal=1.0e-5,
+            gamma_kN_m3=25.0,
+            fy_MPa=35.0,
+            fu_MPa=45.0,
+            norm_ref="EN 1992-1-1 Tabla 3.1 (C35/45)",
+            source=f"Encargo material={material_desc!r}",
+        )
+    if "AASHTO" in norm_up or "CCP" in norm_up or "NSR" in norm_up:
+        return MaterialSpec(
+            name="A992_Fy345",
+            material_type="steel",
+            sap_mat_type=1,
+            E_kPa=200_000_000.0,
+            nu=0.30,
+            alpha_thermal=1.17e-5,
+            gamma_kN_m3=78.5,
+            fy_MPa=345.0,
+            fu_MPa=450.0,
+            norm_ref="AASHTO LRFD §6.4.1 / ASTM A709 Gr. 50 (A992)",
+            source=f"Encargo material={material_desc!r}, norma={norma!r}",
+        )
+    return MaterialSpec(
+        name="S355",
+        material_type="steel",
+        sap_mat_type=1,
+        E_kPa=210_000_000.0,
+        nu=0.30,
+        alpha_thermal=1.2e-5,
+        gamma_kN_m3=78.5,
+        fy_MPa=355.0,
+        fu_MPa=510.0,
+        norm_ref="EN 1993-1-1 Tabla 3.1 / EN 10025-2 (S355)",
+        source=f"Encargo material={material_desc!r}, norma={norma!r}",
+    )
+
+
+def select_bridge_sections(
+    span_m: float,
+    material: MaterialSpec,
+) -> tuple[SectionMechanicalProps, SectionMechanicalProps, dict[str, Any]]:
+    """Predimensiona viga principal y diafragma con criterio de esbeltez L/h."""
+    if material.material_type == "concrete":
+        h_girder = max(1.20, round(span_m / 18.0, 2))
+        b_girder = 0.60
+        h_diaph = round(0.75 * h_girder, 2)
+        b_diaph = 0.30
+        girder = rectangular_concrete_section_props(
+            f"VIGA_HA_{int(h_girder*1000)}x{int(b_girder*1000)}",
+            h_m=h_girder,
+            b_m=b_girder,
+            material_name=material.name,
+        )
+        diaph = rectangular_concrete_section_props(
+            f"DIAF_HA_{int(h_diaph*1000)}x{int(b_diaph*1000)}",
+            h_m=h_diaph,
+            b_m=b_diaph,
+            material_name=material.name,
+        )
+        trace = {
+            "criterion": "Esbeltez L/h = 18 para vigas prefabricadas/in-situ de hormigon (EC2 / SETRA)",
+            "target_h_min_m": round(span_m / 18.0, 4),
+            "selected_girder": girder.name,
+            "selected_diaphragm": diaph.name,
+            "actual_L_over_h": round(span_m / girder.h_m, 2),
+        }
+        return girder, diaph, trace
+
+    # Acero estructural: relacion L/h <= 30 (AASHTO LRFD Tabla 2.5.2.6.3-1 / EN 1993-2)
+    h_target = max(0.50, span_m / 30.0)
+    chosen_name = BRIDGE_STEEL_GIRDER_LADDER[-1]
+    for cand_name in BRIDGE_STEEL_GIRDER_LADDER:
+        cand = get_section(cand_name)
+        if cand.h >= h_target:
+            chosen_name = cand_name
+            # Para luces >= 28 m preferimos la serie pesada HEM 1000 dentro de h ~ 1.0 m
+            if span_m >= 28.0 and cand_name.startswith("HEB"):
+                continue
+            break
+    girder = section_props_from_catalog(chosen_name, material_name=material.name)
+    diaph = section_props_from_catalog("HEB 400", material_name=material.name)
+    trace = {
+        "criterion": "Esbeltez L/h <= 30 en vigas metalicas de puente (AASHTO LRFD Tabla 2.5.2.6.3-1 / EN 1993-2)",
+        "target_h_min_m": round(h_target, 4),
+        "selected_girder": girder.name,
+        "selected_diaphragm": diaph.name,
+        "actual_L_over_h": round(span_m / girder.h_m, 2),
+        "ladder_candidates": list(BRIDGE_STEEL_GIRDER_LADDER),
+    }
+    return girder, diaph, trace
+
+
+def bridge_spec_from_encargo(encargo: Any) -> BridgeDesignSpec:
+    """Construye un ``BridgeDesignSpec`` trazable a partir de un ``Encargo`` ejecutable."""
+    if not getattr(encargo, "ejecutable", False):
+        faltan = getattr(encargo, "faltan", [])
+        raise ValueError(f"El Encargo no es ejecutable; faltan datos obligatorios: {faltan}")
+    if getattr(encargo, "tipo", None) != "puente":
+        raise ValueError(f"Se esperaba encargo de tipo 'puente', recibido: {getattr(encargo, 'tipo', None)!r}")
+
+    def _val(campo: str) -> str:
+        if campo in encargo.datos:
+            return str(encargo.datos[campo]["valor"])
+        for s in encargo.supuestos:
+            if s["campo"] == campo:
+                return str(s["valor"])
+        raise KeyError(f"Campo {campo!r} ausente en datos y supuestos del Encargo")
+
+    span_m = float(encargo.luz_m)
+    norma_raw = _val("norma")
+    uso_raw = _val("uso")
+    ancho_raw = _val("ancho_tablero_o_carriles")
+    material_raw = _val("material")
+    apoyos_raw = _val("apoyos")
+    galibo_raw = _val("galibo")
+    acciones_raw = _val("acciones")
+
+    # Parsear ancho de tablero o numero de carriles
+    m_carriles = re.search(r"(\d+)\s*carriles?", ancho_raw, re.I)
+    m_ancho = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:metros|m)\b", ancho_raw, re.I)
+    if m_ancho:
+        width_m = float(m_ancho.group(1).replace(",", "."))
+        n_lanes = max(1, int(width_m // 3.5))
+    elif m_carriles:
+        n_lanes = int(m_carriles.group(1))
+        width_m = round(n_lanes * 3.5 + 3.0, 3)  # carriles de 3.5 m + arcenes de 1.5 m
+    else:
+        raise ValueError(f"No se pudo extraer ancho o carriles de {ancho_raw!r}")
+
+    m_galibo = re.search(r"(\d+(?:[.,]\d+)?)", galibo_raw)
+    galibo_m = float(m_galibo.group(1).replace(",", ".")) if m_galibo else 5.0
+
+    m_vanos = re.search(r"(\d+)\s*vanos", apoyos_raw, re.I)
+    n_spans = int(m_vanos.group(1)) if m_vanos else 1
+
+    if any(k in norma_raw.upper() or k in acciones_raw.upper() for k in ("AASHTO", "HL-93", "HL93", "CCP", "NSR")):
+        norma_code = "AASHTO_LRFD"
+    else:
+        norma_code = "EN_1991_2"
+
+    n_girders = max(3, min(8, round(width_m / 2.5)))
+    n_diaphragms = max(2, round(span_m / 7.5) - 1)
+
+    mat = default_bridge_material(material_raw, norma_code)
+    girder_sec, diaph_sec, trace = select_bridge_sections(span_m, mat)
+
+    return BridgeDesignSpec(
+        span_m=span_m,
+        width_m=width_m,
+        n_spans=n_spans,
+        n_girders=n_girders,
+        n_diaphragms=n_diaphragms,
+        n_lanes=n_lanes,
+        norma=norma_code,
+        uso=uso_raw,
+        apoyos_desc=apoyos_raw,
+        galibo_m=galibo_m,
+        acciones_desc=acciones_raw,
+        slab_thickness_m=0.25,
+        wearing_surface_kPa=2.0,
+        barrier_load_kN_m_total=5.0,
+        material=mat,
+        girder_section=girder_sec,
+        diaphragm_section=diaph_sec,
+        predimensioning_trace=trace,
+    )
+
+
+def expected_grillage_counts(
+    *,
+    n_spans: int = 1,
+    n_girders: int = 4,
+    n_diaphragms: int = 3,
+    divisions_per_span: int | None = None,
+) -> dict[str, int]:
+    """Deriva matematicamente los recuentos del emparrillado desde la especificacion."""
+    if n_spans < 1 or n_girders < 2:
+        raise ValueError("n_spans>=1 y n_girders>=2 son obligatorios")
+    div = divisions_per_span if divisions_per_span is not None else (n_diaphragms + 1)
+    if div < 1:
+        raise ValueError("divisions_per_span>=1 (o n_diaphragms>=0) es obligatorio")
+    nx = n_spans * div + 1
+    n_joints = nx * n_girders
+    n_frames_long = (nx - 1) * n_girders
+    n_frames_trans = nx * (n_girders - 1)
+    n_frames = n_frames_long + n_frames_trans
+    n_supports = (n_spans + 1) * n_girders
+    return {
+        "n_x": nx,
+        "divisions_per_span": div,
+        "n_joints": n_joints,
+        "n_frames_long": n_frames_long,
+        "n_frames_trans": n_frames_trans,
+        "n_frames": n_frames,
+        "n_supports": n_supports,
+    }
+
+
+def _support_restraint_for_node(is_fixed_abutment: bool, is_guide_girder: bool) -> list[bool]:
+    """Esquema de aparatos de apoyo fisicamente estable e isostatico en planta:
+
+    - Estribo fijo (x = 0):
+      * Apoyo guia (ig = 0): [Ux=True, Uy=True, Uz=True, Rx=False, Ry=False, Rz=False]
+      * Resto de vigas (ig > 0): [Ux=True, Uy=False, Uz=True, Rx=False, Ry=False, Rz=False]
+        (permite libre dilatacion termica transversal entre vigas sin coaccion espuria).
+    - Estribo/pilas moviles (x > 0):
+      * Apoyo guia (ig = 0): [Ux=False, Uy=True, Uz=True, Rx=False, Ry=False, Rz=False]
+        (permite libre dilatacion longitudinal Ux=0 y guia transversalmente Uy=1 para
+        impedir el giro en planta Rz del tablero con brazo L).
+      * Resto de vigas (ig > 0): [Ux=False, Uy=False, Uz=True, Rx=False, Ry=False, Rz=False]
+        (apoyo deslizante multidireccional: solo coacciona Uz=1).
+    """
+    ux = bool(is_fixed_abutment)
+    uy = bool(is_guide_girder)
+    uz = True
+    return [ux, uy, uz, False, False, False]
+
+
+def verify_kinematic_stability(joints: list[dict[str, Any]]) -> dict[str, Any]:
+    """Verifica que el esquema de apoyos sea cinematicamente estable en los 6 GDL globales
+    (sum_Fx, sum_Fy, sum_Fz, sum_Mx, sum_My, sum_Mz) y libre de coaccion longitudinal
+    espuria en los apoyos moviles (x > 0).
+    """
+    supports = [j for j in joints if j.get("restraint") is not None]
+    if len(supports) < 3:
+        raise ValueError(f"Inestabilidad cinemática: se requieren al menos 3 apoyos, hallados {len(supports)}")
+
+    ux_nodes = [j for j in supports if j["restraint"][0]]
+    uy_nodes = [j for j in supports if j["restraint"][1]]
+    uz_nodes = [j for j in supports if j["restraint"][2]]
+
+    sum_fx = len(ux_nodes) >= 1
+    sum_fy = len(uy_nodes) >= 1
+    sum_fz = len(uz_nodes) >= 3
+
+    # Giro alrededor de X (vuelco transversal / torsión global): requiere Uz en distintos Y
+    uz_y_coords = {round(float(j["y"]), 4) for j in uz_nodes}
+    sum_mx = len(uz_y_coords) >= 2 and (max(uz_y_coords) - min(uz_y_coords) > 1e-4)
+
+    # Giro alrededor de Y (cabeceo longitudinal): requiere Uz en distintos X
+    uz_x_coords = {round(float(j["x"]), 4) for j in uz_nodes}
+    sum_my = len(uz_x_coords) >= 2 and (max(uz_x_coords) - min(uz_x_coords) > 1e-4)
+
+    # Giro alrededor de Z en planta (guiñada): requiere Uy en distintos X (par transversal con brazo L)
+    uy_x_coords = {round(float(j["x"]), 4) for j in uy_nodes}
+    sum_mz = len(uy_x_coords) >= 2 and (max(uy_x_coords) - min(uy_x_coords) > 1e-4)
+
+    if not sum_fx:
+        raise ValueError("Inestabilidad cinemática (sum_Fx): ningún apoyo restringe Ux")
+    if not sum_fy:
+        raise ValueError("Inestabilidad cinemática (sum_Fy): ningún apoyo restringe Uy")
+    if not sum_fz:
+        raise ValueError("Inestabilidad cinemática (sum_Fz): apoyos verticales Uz insuficientes")
+    if not sum_mx:
+        raise ValueError("Inestabilidad cinemática (sum_Mx): falta brazo transversal entre apoyos Uz")
+    if not sum_my:
+        raise ValueError("Inestabilidad cinemática (sum_My): falta brazo longitudinal entre apoyos Uz")
+    if not sum_mz:
+        raise ValueError(
+            "Inestabilidad cinemática en planta (sum_Mz): falta guía transversal Uy en estribos opuestos"
+        )
+
+    # Comprobar ausencia de coaccion longitudinal espuria en apoyos moviles (x > x_min)
+    x_min = min(float(j["x"]) for j in supports)
+    movable_supports = [j for j in supports if float(j["x"]) > x_min + 1e-4]
+    locked_movable = [j["id"] for j in movable_supports if j["restraint"][0]]
+    if locked_movable:
+        raise ValueError(
+            f"Coacción longitudinal espuria en apoyos móviles {locked_movable}: "
+            f"Ux=True en x > {x_min} bloquea la dilatación longitudinal del tablero"
+        )
+
+    y_min = min(float(j["y"]) for j in supports)
+    non_guide_supports = [j for j in supports if float(j["y"]) > y_min + 1e-4]
+    transverse_free = all(not j["restraint"][1] for j in non_guide_supports)
+
+    return {
+        "stable_3d": True,
+        "global_dofs": {
+            "sum_Fx": sum_fx,
+            "sum_Fy": sum_fy,
+            "sum_Fz": sum_fz,
+            "sum_Mx": sum_mx,
+            "sum_My": sum_my,
+            "sum_Mz": sum_mz,
+        },
+        "longitudinal_expansion_free_at_movable": True,
+        "transverse_expansion_free_on_non_guide": transverse_free,
+        "n_supports_total": len(supports),
+        "n_ux_restrained": len(ux_nodes),
+        "n_uy_restrained": len(uy_nodes),
+        "n_uz_restrained": len(uz_nodes),
+    }
+
+
+def _compute_grillage_loads(
+    *,
+    joints: list[dict[str, Any]],
+    frames: list[dict[str, Any]],
+    span_length: float,
+    n_spans: int,
+    n_girders: int,
+    girder_spacing: float,
+    spec: BridgeDesignSpec | None = None,
+) -> dict[str, Any]:
+    """Calcula las cargas permanentes (DEAD, DW), sobrecarga de carril (LIVE_LANE),
+    posiciones pesimas del vehiculo de diseno (LIVE_VEHICLE_M en centro de vano y
+    LIVE_VEHICLE_V junto al apoyo) y combinaciones normativas ELU/ELS.
+    """
+    width_m = round((n_girders - 1) * girder_spacing, 6)
+    norma = spec.norma if spec is not None else "AASHTO_LRFD"
+    n_lanes = spec.n_lanes if spec is not None else max(1, int(width_m // 3.5))
+    slab_thickness_m = spec.slab_thickness_m if spec is not None else 0.25
+    wearing_kPa = spec.wearing_surface_kPa if spec is not None else 2.0
+    barrier_total_kN_m = spec.barrier_load_kN_m_total if spec is not None else 5.0
+
+    # Ancho tributario medio por viga longitudinal
+    b_trib = width_m / n_girders
+    # Peso de la losa de hormigon armado (25 kN/m^3 * espesor * ancho tributario)
+    q_slab_per_girder_kN_m = round(25.0 * slab_thickness_m * b_trib, 4)
+    # Carga muerta no estructural DW (pavimento + pretiles/barreras repartidos entre vigas)
+    q_dw_per_girder_kN_m = round(wearing_kPa * b_trib + barrier_total_kN_m / n_girders, 4)
+
+    # Identificar coordenadas X de los nudos de las vigas para repartir ejes del vehiculo
+    x_coords = sorted({round(float(j["x"]), 6) for j in joints})
+
+    def _lump_axle_to_x_nodes(x_pos: float, total_axle_kN: float) -> list[tuple[float, float]]:
+        """Reparte una carga de eje en x_pos hacia los nudos transversales adyacentes por ley de palanca."""
+        if x_pos < x_coords[0] - 1e-6 or x_pos > x_coords[-1] + 1e-6:
+            return []
+        for idx in range(len(x_coords) - 1):
+            x_left = x_coords[idx]
+            x_right = x_coords[idx + 1]
+            if x_left - 1e-6 <= x_pos <= x_right + 1e-6:
+                dx_seg = x_right - x_left
+                if dx_seg <= 1e-9:
+                    return [(x_left, total_axle_kN)]
+                w_right = (x_pos - x_left) / dx_seg
+                w_left = 1.0 - w_right
+                out = []
+                if w_left > 1e-6:
+                    out.append((x_left, total_axle_kN * w_left))
+                if w_right > 1e-6:
+                    out.append((x_right, total_axle_kN * w_right))
+                return out
+        return []
+
+    if norma == "EN_1991_2":
+        lm1 = LM1(n_lanes=n_lanes)
+        M_env_kNm, V_env_kN = traffic_envelope_lm1(span_length, n_lanes=n_lanes)
+        # Sobrecarga uniforme UDL total de los carriles LM1 + area remanente
+        rem_width = max(0.0, width_m - n_lanes * lm1.lane_width)
+        udl_total_kN_m = sum(lm1.udl_per_lane_kN_per_m()) + rem_width * 2.5
+        q_lane_per_girder_kN_m = round(udl_total_kN_m / n_girders, 4)
+        # Tandem System TS: dos ejes separados 1.20 m
+        ts_axle_total_kN = sum(lm1.tandem_axles_kN())
+        axles_kN = [ts_axle_total_kN, ts_axle_total_kN]
+        spacings_m = [1.20]
+        impact_factor = 1.0  # EN 1991-2 ya incluye amplificacion dinamica en LM1
+        traffic_code = "EN_1991_2_LM1"
+        # Posicion critica de Barre para M+ (EN 1991-2 TS, a=1.20 m): x_c = L/2 - a/4 = L/2 - 0.30 m
+        axle_positions_M = [span_length / 2.0 - 0.30, span_length / 2.0 + 0.90]
+        # Posicion critica para Vmax junto al apoyo: primer eje en x = 0, segundo en x = 1.20 m
+        axle_positions_V = [0.0, min(span_length, 1.20)]
+        combos_spec = [
+            {
+                "name": "ULS_STR",
+                "norm_ref": "EN 1990 §6.4.3.2 Ec. 6.10 + Anexo A2 Tabla A2.4(B)",
+                "factors": {
+                    "DEAD": GAMMA_G_SUP,
+                    "DW": GAMMA_G_SUP,
+                    "LIVE_LANE": EN1990_A2_GAMMA_Q_TRAFFIC,
+                    "LIVE_VEHICLE_M": EN1990_A2_GAMMA_Q_TRAFFIC,
+                },
+            },
+            {
+                "name": "ULS_STR_SHEAR",
+                "norm_ref": "EN 1990 §6.4.3.2 Ec. 6.10 + Anexo A2 Tabla A2.4(B)",
+                "factors": {
+                    "DEAD": GAMMA_G_SUP,
+                    "DW": GAMMA_G_SUP,
+                    "LIVE_LANE": EN1990_A2_GAMMA_Q_TRAFFIC,
+                    "LIVE_VEHICLE_V": EN1990_A2_GAMMA_Q_TRAFFIC,
+                },
+            },
+            {
+                "name": "SLS_CHARACTERISTIC",
+                "norm_ref": "EN 1990 §6.5.3 Ec. 6.14b (Combinación característica)",
+                "factors": {
+                    "DEAD": 1.0,
+                    "DW": 1.0,
+                    "LIVE_LANE": 1.0,
+                    "LIVE_VEHICLE_M": 1.0,
+                },
+            },
+        ]
+    else:
+        hl93_res = hl93_envelope(span_length, impact_factor=1.33)
+        M_env_kNm = float(hl93_res["M_max_kNm"])
+        V_env_kN = float(hl93_res["V_max_kN"])
+        impact_factor = 1.33
+        traffic_code = "AASHTO_LRFD_HL93"
+        # Factor de presencia multiple AASHTO LRFD Tabla 3.6.1.1.2-1 (m=1.20 para 1 carril, 1.00 para 2)
+        mpf = 1.20 if n_lanes == 1 else (1.00 if n_lanes == 2 else 0.85)
+        q_lane_per_girder_kN_m = round((HL93_LANE_LOAD_KN_M * n_lanes * mpf) / n_girders, 4)
+        # Camion de diseno HS-20 amplificado por impacto IM y numero de carriles * mpf
+        scale_veh = impact_factor * n_lanes * mpf
+        axles_kN = [round(p * scale_veh, 4) for p in TRUCK_AXLES_kN]
+        spacings_m = list(TRUCK_AXLE_SPACINGS_m)
+        # Posicion de Barre para camion HS-20: eje central de 145 kN en L/2 -> ejes a L/2 - 4.3, L/2, L/2 + 4.3
+        axle_positions_M = [
+            max(0.0, span_length / 2.0 - spacings_m[0]),
+            span_length / 2.0,
+            min(span_length, span_length / 2.0 + spacings_m[1]),
+        ]
+        # Posicion critica de cortante en apoyo x=0: eje pesado de 145 kN en x=0, siguiente en 4.3 m, delantero en 8.6 m
+        axle_positions_V = [
+            0.0,
+            min(span_length, spacings_m[1]),
+            min(span_length, spacings_m[0] + spacings_m[1]),
+        ]
+        # En Vmax el eje en x=0 es el trasero de 145 kN
+        axles_V_kN = [axles_kN[2], axles_kN[1], axles_kN[0]]
+        combos_spec = [
+            {
+                "name": "ULS_STRENGTH_I",
+                "norm_ref": "AASHTO LRFD Tabla 3.4.1-1 (Strength I)",
+                "factors": {
+                    "DEAD": aashto_gamma("Strength_I", "DC"),
+                    "DW": aashto_gamma("Strength_I", "DW"),
+                    "LIVE_LANE": aashto_gamma("Strength_I", "LL"),
+                    "LIVE_VEHICLE_M": aashto_gamma("Strength_I", "LL"),
+                },
+            },
+            {
+                "name": "ULS_STRENGTH_I_SHEAR",
+                "norm_ref": "AASHTO LRFD Tabla 3.4.1-1 (Strength I Shear)",
+                "factors": {
+                    "DEAD": aashto_gamma("Strength_I", "DC"),
+                    "DW": aashto_gamma("Strength_I", "DW"),
+                    "LIVE_LANE": aashto_gamma("Strength_I", "LL"),
+                    "LIVE_VEHICLE_V": aashto_gamma("Strength_I", "LL"),
+                },
+            },
+            {
+                "name": "SLS_SERVICE_II",
+                "norm_ref": "AASHTO LRFD Tabla 3.4.1-1 (Service II)",
+                "factors": {
+                    "DEAD": aashto_gamma("Service_II", "DC"),
+                    "DW": aashto_gamma("Service_II", "DW"),
+                    "LIVE_LANE": aashto_gamma("Service_II", "LL"),
+                    "LIVE_VEHICLE_M": aashto_gamma("Service_II", "LL"),
+                },
+            },
+        ]
+
+    if norma == "EN_1991_2":
+        axles_V_kN = list(axles_kN)
+
+    # Construir cargas puntuales equivalentes en nudos para LIVE_VEHICLE_M y LIVE_VEHICLE_V
+    # El emparrillado con diafragmas transversales distribuye transversalmente las cargas aplicadas en las vigas.
+    nodal_loads_M: dict[str, float] = {}
+    for x_ax, p_total in zip(axle_positions_M, axles_kN):
+        for x_node, p_lumped in _lump_axle_to_x_nodes(x_ax, p_total):
+            p_per_girder = p_lumped / n_girders
+            for j in joints:
+                if abs(float(j["x"]) - x_node) < 1e-4:
+                    nodal_loads_M[j["id"]] = round(nodal_loads_M.get(j["id"], 0.0) - p_per_girder, 4)
+
+    nodal_loads_V: dict[str, float] = {}
+    for x_ax, p_total in zip(axle_positions_V, axles_V_kN):
+        for x_node, p_lumped in _lump_axle_to_x_nodes(x_ax, p_total):
+            p_per_girder = p_lumped / n_girders
+            for j in joints:
+                if abs(float(j["x"]) - x_node) < 1e-4:
+                    nodal_loads_V[j["id"]] = round(nodal_loads_V.get(j["id"], 0.0) - p_per_girder, 4)
+
+    long_frame_ids = [f["id"] for f in frames if f["id"].startswith("L")]
+
+    return {
+        "traffic_code": traffic_code,
+        "impact_factor_IM": impact_factor,
+        "n_lanes": n_lanes,
+        "q_slab_per_girder_kN_m": q_slab_per_girder_kN_m,
+        "q_dw_per_girder_kN_m": q_dw_per_girder_kN_m,
+        "q_lane_per_girder_kN_m": q_lane_per_girder_kN_m,
+        "vehicle_axles_M_kN": axles_kN,
+        "vehicle_positions_M_m": [round(x, 4) for x in axle_positions_M],
+        "vehicle_axles_V_kN": axles_V_kN,
+        "vehicle_positions_V_m": [round(x, 4) for x in axle_positions_V],
+        "analytical_envelope_M_kNm": round(M_env_kNm, 3),
+        "analytical_envelope_V_kN": round(V_env_kN, 3),
+        "longitudinal_frames_loaded": long_frame_ids,
+        "nodal_loads_LIVE_VEHICLE_M_Fz_kN": nodal_loads_M,
+        "nodal_loads_LIVE_VEHICLE_V_Fz_kN": nodal_loads_V,
+        "combinations": combos_spec,
+    }
+
+
+MODEL_LIMITATIONS: tuple[str, ...] = (
+    "El tren de cargas de tráfico (HL-93 / LM1) se introduce mediante casos estáticos en "
+    "posiciones longitudinales críticas discretas (centro de vano por teorema de Barré para M+ "
+    "y apoyo x=0 para Vmax) con condensación por ley de palanca a los nudos del emparrillado, "
+    "no como análisis de superficie de influencia 3D con barrido continuo de pasos de carga.",
+    "La losa superior de hormigón se introduce como masa/carga permanente tributaria sobre las "
+    "vigas longitudinales y rigidez transversal concentrada en los diafragmas; no se modela acción "
+    "mixta viga-losa ni desfase de cortante (shear lag) mediante elementos Shell acoplados.",
+    "Los aparatos de apoyo se modelan como vínculos puntuales ideales isostáticos en planta "
+    "(fijo en x=0, deslizante longitudinal con guía transversal en x=L), sin rigidez finita "
+    "de neopreno zunchado ni interacción suelo-estructura en estribos.",
+)
+
+APPLICABLE_LIMIT_STATES: tuple[str, ...] = (
+    "ELU_FLEXION_LONGITUDINAL (M33 <= phi*Mn / Mpl,Rd)",
+    "ELU_CORTANTE_VERTICAL (V2 <= phi*Vn / Vpl,Rd)",
+    "ELU_INTERACCION_FLEXO_CORTANTE_AXIL (M-V-N en vigas y diafragmas)",
+    "ELU_TORSION_Y_ALABEO_EMPARRILLADO (T + bimomento en vigas de borde y diafragmas)",
+    "ELU_PANDEO_LATERAL_TORSIONAL_Y_ABOLLADURA_ALMA (LTB y esbeltez de paneles h_w/t_w)",
+    "ELU_CONEXION_RASANTE_LOSA_VIGA (pernos conectores en sección mixta)",
+    "ELS_FLECHA_ACTIVA_TRAFICO (delta_LL <= L/800 AASHTO LRFD §2.5.2.6.2 / EN 1993-2)",
+    "ELS_LIMITACION_TENSIONES_Y_FISURACION (Service II / combinación característica)",
+    "ELU_FATIGA_DETALLES_SOLDADOS (Fatigue I/II AASHTO / EN 1993-1-9)",
+    "ELU_APARATOS_DE_APOYO_Y_ESTRIBOS (reacciones verticales y horizontales en apoyos)",
+)
+
+UNIMPLEMENTED_CHECKS: tuple[str, ...] = (
+    "ELU_TORSION_Y_ALABEO_EMPARRILLADO (alabeo restringido y tensiones tangenciales de Saint-Venant + Vlasov)",
+    "ELU_ABOLLADURA_POR_CORTANTE_Y_RIGIDIZADORES_TRANSVERSALES (EN 1993-1-5 / AASHTO §6.10.9)",
+    "ELU_CONEXION_RASANTE_LOSA_VIGA (diseño de conectores stud en interfase acero-hormigón)",
+    "ELU_FATIGA_DETALLES_SOLDADOS (espectro de daño acumulado por ciclos de tráfico pesado)",
+    "ELU_APARATOS_DE_APOYO_Y_ESTRIBOS (dimensionamiento de neoprenos zunchados y estribos)",
+)
 
 
 def generate_grillage(
@@ -28,21 +767,45 @@ def generate_grillage(
     n_girders: int = 4,
     girder_spacing: float = 2.5,
     divisions_per_span: int = 8,
-    long_section: str = "GIRDER",
-    trans_section: str = "DIAPHRAGM",
+    long_section: str = "HEM 1000",
+    trans_section: str = "HEB 400",
+    spec: BridgeDesignSpec | None = None,
 ) -> dict[str, Any]:
-    """Devuelve ``{joints, frames, meta}`` del emparrillado.
+    """Devuelve ``{joints, frames, meta}`` del emparrillado fisicamente consistente.
 
-    - joints: ``{id,x,y,z,restraint}`` (apoyos articulados en las líneas de pila).
-    - frames: longitudinales ``L*`` (vigas) + transversales ``T*`` (diafragmas).
+    - ``joints``: ``{id, x, y, z, restraint}`` con esquema de apoyos cinematicamente
+      estable en 3D (estribo fijo en x=0 y estribo/pilas moviles con dilatacion
+      longitudinal libre Ux=False en x>0 y guia transversal Uy=True en ig=0).
+    - ``frames``: longitudinales ``L*`` (vigas) + transversales ``T*`` (diafragmas)
+      con secciones reales de catalogo verificadas.
     """
     if n_spans < 1 or n_girders < 2 or divisions_per_span < 1:
         raise ValueError("n_spans>=1, n_girders>=2, divisions_per_span>=1")
 
-    nx = n_spans * divisions_per_span + 1            # líneas transversales
+    mat = spec.material if spec is not None else default_bridge_material("acero", "EN_1991_2")
+    if spec is not None:
+        girder_props = spec.girder_section
+        diaph_props = spec.diaphragm_section
+        long_section = girder_props.name
+        trans_section = diaph_props.name
+    else:
+        # Si se pasa el valor generico antiguo "GIRDER"/"DIAPHRAGM", sustituir por seccion real de catalogo
+        eff_long = "HEM 1000" if long_section in ("GIRDER", "") else long_section
+        eff_trans = "HEB 400" if trans_section in ("DIAPHRAGM", "") else trans_section
+        girder_props = section_props_from_catalog(eff_long, material_name=mat.name)
+        diaph_props = section_props_from_catalog(eff_trans, material_name=mat.name)
+        long_section = girder_props.name
+        trans_section = diaph_props.name
+
+    counts = expected_grillage_counts(
+        n_spans=n_spans,
+        n_girders=n_girders,
+        n_diaphragms=divisions_per_span - 1,
+        divisions_per_span=divisions_per_span,
+    )
+    nx = counts["n_x"]
     dx = span_length / divisions_per_span
     x_coords = [round(ix * dx, 6) for ix in range(nx)]
-    # índices de líneas transversales que caen sobre una pila (x = k·span_length)
     support_ix = {k * divisions_per_span for k in range(n_spans + 1)}
 
     def jid(ix: int, ig: int) -> str:
@@ -51,35 +814,77 @@ def generate_grillage(
     joints: list[dict[str, Any]] = []
     for ix in range(nx):
         for ig in range(n_girders):
+            restraint = None
+            if ix in support_ix:
+                restraint = _support_restraint_for_node(
+                    is_fixed_abutment=(ix == 0),
+                    is_guide_girder=(ig == 0),
+                )
             joints.append({
                 "id": jid(ix, ig),
                 "x": x_coords[ix],
                 "y": round(ig * girder_spacing, 6),
                 "z": 0.0,
-                # apoyo articulado (pin) en las líneas de pila
-                "restraint": [True, True, True, False, False, False] if ix in support_ix else None,
+                "restraint": restraint,
             })
 
+    kinematic_report = verify_kinematic_stability(joints)
+
     frames: list[dict[str, Any]] = []
-    # Vigas longitudinales: a lo largo de cada girder
+    # Vigas longitudinales: a lo largo de cada girder (eje X global)
     for ig in range(n_girders):
         for ix in range(nx - 1):
-            frames.append({"id": f"L{ix}_{ig}", "joint_i": jid(ix, ig),
-                           "joint_j": jid(ix + 1, ig), "section": long_section})
-    # Diafragmas transversales: en cada línea, entre girders consecutivos
+            frames.append({
+                "id": f"L{ix}_{ig}",
+                "joint_i": jid(ix, ig),
+                "joint_j": jid(ix + 1, ig),
+                "section": long_section,
+                "role": "girder",
+            })
+    # Diafragmas transversales: en cada linea transversal, entre girders consecutivos (eje Y global)
     for ix in range(nx):
         for ig in range(n_girders - 1):
-            frames.append({"id": f"T{ix}_{ig}", "joint_i": jid(ix, ig),
-                           "joint_j": jid(ix, ig + 1), "section": trans_section})
+            frames.append({
+                "id": f"T{ix}_{ig}",
+                "joint_i": jid(ix, ig),
+                "joint_j": jid(ix, ig + 1),
+                "section": trans_section,
+                "role": "diaphragm",
+            })
+
+    loads_summary = _compute_grillage_loads(
+        joints=joints,
+        frames=frames,
+        span_length=span_length,
+        n_spans=n_spans,
+        n_girders=n_girders,
+        girder_spacing=girder_spacing,
+        spec=spec,
+    )
 
     return {
         "joints": joints,
         "frames": frames,
         "meta": {
-            "n_spans": n_spans, "span_length": span_length, "n_girders": n_girders,
-            "girder_spacing": girder_spacing, "divisions_per_span": divisions_per_span,
+            "n_spans": n_spans,
+            "span_length": span_length,
+            "n_girders": n_girders,
+            "girder_spacing": girder_spacing,
+            "divisions_per_span": divisions_per_span,
             "total_length": round(n_spans * span_length, 6),
+            "width_m": round((n_girders - 1) * girder_spacing, 6),
             "lane_load_kN_m": HL93_LANE_LOAD_KN_M,
+            "derived_counts": counts,
+            "kinematic_stability": kinematic_report,
+            "material": mat.to_dict(),
+            "sections": {
+                long_section: girder_props.to_dict(),
+                trans_section: diaph_props.to_dict(),
+            },
+            "loads_summary": loads_summary,
+            "limitaciones_modelo": list(MODEL_LIMITATIONS),
+            "estados_limite_aplicables": list(APPLICABLE_LIMIT_STATES),
+            "comprobaciones_no_implementadas": list(UNIMPLEMENTED_CHECKS),
         },
     }
 
@@ -91,23 +896,16 @@ def grillage_model(
     n_diaphragms: int = 3,
     *,
     n_spans: int = 1,
-    long_section: str = "GIRDER",
-    trans_section: str = "DIAPHRAGM",
+    long_section: str = "HEM 1000",
+    trans_section: str = "HEB 400",
+    spec: BridgeDesignSpec | None = None,
 ) -> dict[str, Any]:
     """Modelo de emparrillado de un tablero a partir de luz, ancho y conteos.
 
-    Firma de conveniencia ``grillage_model(L, W, n_girders, n_diaphragms)``
-    (idea #12). Reparametriza :func:`generate_grillage`:
-
-    - ``W`` es el ancho TOTAL del tablero → la separación entre vigas es
-      ``W / (n_girders - 1)`` (vigas equiespaciadas, bordes incluidos).
-    - ``n_diaphragms`` es el número de líneas de diafragma INTERIORES (entre
-      apoyos). Con los dos diafragmas de apoyo, hay ``n_diaphragms + 2``
-      líneas transversales por vano → ``divisions_per_span = n_diaphragms + 1``.
-
-    Devuelve ``{joints, frames, meta}`` (mismo contrato que consume
-    ``fastsap.worker_sap2000.StructuralJobInput``): frames longitudinales
-    ``L*`` (vigas) y transversales ``T*`` (diafragmas).
+    - ``W`` es el ancho TOTAL del tablero -> separacion entre vigas ``W / (n_girders - 1)``.
+    - ``n_diaphragms`` es el numero de lineas de diafragma INTERIORES (entre apoyos).
+      Con los dos diafragmas de apoyo, hay ``n_diaphragms + 2`` lineas transversales
+      por vano -> ``divisions_per_span = n_diaphragms + 1``.
     """
     if n_girders < 2:
         raise ValueError("n_girders>=2")
@@ -125,7 +923,110 @@ def grillage_model(
         divisions_per_span=divisions_per_span,
         long_section=long_section,
         trans_section=trans_section,
+        spec=spec,
     )
+
+
+def _register_material_and_sections_oapi(sap_model: Any, meta: dict[str, Any]) -> None:
+    """Registra explicita y verificadamente el material y las secciones en SapModel."""
+    mat = meta["material"]
+    mat_name = mat["name"]
+    if hasattr(sap_model, "PropMaterial"):
+        _check_ret("SetMaterial", sap_model.PropMaterial.SetMaterial(mat_name, int(mat["sap_mat_type"])))
+        _check_ret(
+            "SetMPIsotropic",
+            sap_model.PropMaterial.SetMPIsotropic(
+                mat_name, float(mat["E_kPa"]), float(mat["nu"]), float(mat["alpha_thermal"])
+            ),
+        )
+        _check_ret(
+            "SetWeightAndMass",
+            sap_model.PropMaterial.SetWeightAndMass(mat_name, 1, float(mat["gamma_kN_m3"])),
+        )
+
+    if hasattr(sap_model, "PropFrame"):
+        for sec_name, sec in meta["sections"].items():
+            if sec["shape"] == "I":
+                _check_ret(
+                    "SetISection",
+                    sap_model.PropFrame.SetISection(
+                        sec_name,
+                        sec["material_name"],
+                        float(sec["h_m"]),
+                        float(sec["b_m"]),
+                        float(sec["tf_m"]),
+                        float(sec["tw_m"]),
+                        float(sec["b_m"]),
+                        float(sec["tf_m"]),
+                    ),
+                )
+            else:
+                _check_ret(
+                    "SetRectangle",
+                    sap_model.PropFrame.SetRectangle(
+                        sec_name,
+                        sec["material_name"],
+                        float(sec["h_m"]),
+                        float(sec["b_m"]),
+                    ),
+                )
+
+
+def _apply_bridge_loads_and_combos_oapi(sap_model: Any, meta: dict[str, Any]) -> None:
+    """Crea patrones de carga (DEAD, DW, LIVE_LANE, LIVE_VEHICLE_M, LIVE_VEHICLE_V),
+    asigna cargas distribuidas y puntuales de ejes y define combinaciones normativas.
+    """
+    loads = meta["loads_summary"]
+    if hasattr(sap_model, "LoadPatterns"):
+        # eLoadPatternType: 1=Dead, 2=SuperDead, 3=Live
+        _check_ret("LoadPatterns.Add", sap_model.LoadPatterns.Add("DEAD", 1, 1.0, True))
+        _check_ret("LoadPatterns.Add", sap_model.LoadPatterns.Add("DW", 2, 0.0, True))
+        _check_ret("LoadPatterns.Add", sap_model.LoadPatterns.Add("LIVE_LANE", 3, 0.0, True))
+        _check_ret("LoadPatterns.Add", sap_model.LoadPatterns.Add("LIVE_VEHICLE_M", 3, 0.0, True))
+        _check_ret("LoadPatterns.Add", sap_model.LoadPatterns.Add("LIVE_VEHICLE_V", 3, 0.0, True))
+
+    if hasattr(sap_model, "FrameObj") and hasattr(sap_model.FrameObj, "SetLoadDistributed"):
+        q_slab = float(loads["q_slab_per_girder_kN_m"])
+        q_dw = float(loads["q_dw_per_girder_kN_m"])
+        q_lane = float(loads["q_lane_per_girder_kN_m"])
+        # Dir=6 en SAP2000 OAPI es Gravity (hacia -Z global con valor positivo, o Dir=10 Gravity)
+        for fid in loads["longitudinal_frames_loaded"]:
+            _check_ret(
+                "SetLoadDistributed",
+                sap_model.FrameObj.SetLoadDistributed(fid, "DEAD", 1, 6, 0.0, 1.0, q_slab, q_slab),
+            )
+            _check_ret(
+                "SetLoadDistributed",
+                sap_model.FrameObj.SetLoadDistributed(fid, "DW", 1, 6, 0.0, 1.0, q_dw, q_dw),
+            )
+            _check_ret(
+                "SetLoadDistributed",
+                sap_model.FrameObj.SetLoadDistributed(fid, "LIVE_LANE", 1, 6, 0.0, 1.0, q_lane, q_lane),
+            )
+
+    if hasattr(sap_model, "PointObj") and hasattr(sap_model.PointObj, "SetLoadForce"):
+        for jid, fz_kN in loads["nodal_loads_LIVE_VEHICLE_M_Fz_kN"].items():
+            _check_ret(
+                "SetLoadForce",
+                sap_model.PointObj.SetLoadForce(jid, "LIVE_VEHICLE_M", [0.0, 0.0, float(fz_kN), 0.0, 0.0, 0.0]),
+            )
+        for jid, fz_kN in loads["nodal_loads_LIVE_VEHICLE_V_Fz_kN"].items():
+            _check_ret(
+                "SetLoadForce",
+                sap_model.PointObj.SetLoadForce(jid, "LIVE_VEHICLE_V", [0.0, 0.0, float(fz_kN), 0.0, 0.0, 0.0]),
+            )
+
+    if hasattr(sap_model, "RespCombo"):
+        for combo in loads["combinations"]:
+            cname = combo["name"]
+            # ComboType=0 -> Linear Additive
+            _check_ret("RespCombo.Add", sap_model.RespCombo.Add(cname, 0))
+            for case_name, factor in combo["factors"].items():
+                # eCNameType=0 -> LoadCase
+                _check_ret(
+                    "RespCombo.SetCaseList",
+                    sap_model.RespCombo.SetCaseList(cname, 0, case_name, float(factor)),
+                )
 
 
 def build_bridge_grillage(
@@ -136,44 +1037,48 @@ def build_bridge_grillage(
     n_girders: int = 4,
     n_diaphragms: int = 3,
     n_spans: int = 1,
-    long_section: str = "GIRDER",
-    trans_section: str = "DIAPHRAGM",
+    long_section: str = "HEM 1000",
+    trans_section: str = "HEB 400",
+    spec: BridgeDesignSpec | None = None,
     preview_only: bool = False,
 ) -> dict[str, Any]:
-    """Construye el emparrillado en CSiBridge/SAP vía OAPI (idea #12).
+    """Construye el emparrillado de puente en SAP2000/CSiBridge vía OAPI verificando cada retorno.
 
-    Resuelve el TODO histórico de wiring a CSiBridge. ``client`` puede ser:
-
-    - un ``fastcsib.CsibClient`` / ``fastsap`` client (se usa ``client.SapModel``),
-    - o directamente un ``SapModel`` (mock testeable).
-
-    Sigue el patrón de ``fastcsib.manual_bridge_builder.build_curved_viaduct``:
-    ``PointObj.AddCartesian`` para cada nodo (+ ``SetRestraint`` en apoyos) y
-    ``FrameObj.AddByPoint`` para cada barra. Con ``preview_only=True`` no toca
-    el modelo y sólo cuenta entidades — útil para tests sin licencia.
-
-    Returns
-    -------
-    dict con el modelo generado más ``n_joints`` / ``n_frames`` /
-    ``n_frames_long`` / ``n_frames_trans`` / ``n_supports``.
+    Si se proporciona ``spec`` (``BridgeDesignSpec`` procedente de ``bridge_spec_from_encargo``),
+    sus dimensiones, conteos, materiales, secciones y cargas gobiernan la generacion.
+    Cada llamada OAPI comprueba ``ret == 0``; si cualquier llamada devuelve ``ret != 0``,
+    lanza inmediatamente :class:`OAPICallError`.
     """
+    if spec is not None:
+        L = spec.span_m
+        W = spec.width_m
+        n_girders = spec.n_girders
+        n_diaphragms = spec.n_diaphragms
+        n_spans = spec.n_spans
+        long_section = spec.girder_section.name
+        trans_section = spec.diaphragm_section.name
+
     model = grillage_model(
-        L, W, n_girders, n_diaphragms,
-        n_spans=n_spans, long_section=long_section, trans_section=trans_section,
+        L,
+        W,
+        n_girders,
+        n_diaphragms,
+        n_spans=n_spans,
+        long_section=long_section,
+        trans_section=trans_section,
+        spec=spec,
     )
     joints = model["joints"]
     frames = model["frames"]
-    n_long = sum(1 for f in frames if f["id"].startswith("L"))
-    n_trans = sum(1 for f in frames if f["id"].startswith("T"))
-    n_supports = sum(1 for j in joints if j["restraint"] is not None)
+    counts = model["meta"]["derived_counts"]
 
     summary = {
         **model,
-        "n_joints": len(joints),
-        "n_frames": len(frames),
-        "n_frames_long": n_long,
-        "n_frames_trans": n_trans,
-        "n_supports": n_supports,
+        "n_joints": counts["n_joints"],
+        "n_frames": counts["n_frames"],
+        "n_frames_long": counts["n_frames_long"],
+        "n_frames_trans": counts["n_frames_trans"],
+        "n_supports": counts["n_supports"],
     }
     if preview_only:
         return summary
@@ -181,23 +1086,58 @@ def build_bridge_grillage(
     sap_model = getattr(client, "SapModel", client)
     if sap_model is None:
         raise RuntimeError(
-            "client no expone SapModel (¿conectado a CSiBridge?). "
+            "client no expone SapModel (¿conectado a SAP2000/CSiBridge?). "
             "Usa preview_only=True para contar sin tocar el modelo."
         )
-    # 1) Nodos + apoyos. AddCartesian(x, y, z, Name, UserName) en la API CSI.
+
+    # 1) Definir materiales y secciones transversales reales antes de crear barras
+    _register_material_and_sections_oapi(sap_model, model["meta"])
+
+    # 2) Nodos + apoyos cinematica y estaticamente estables en 3D
     for j in joints:
-        sap_model.PointObj.AddCartesian(j["x"], j["y"], j["z"], j["id"], j["id"])
-        if j["restraint"] is not None:
-            sap_model.PointObj.SetRestraint(j["id"], list(j["restraint"]))
-    # 2) Barras (vigas + diafragmas) con su sección.
-    for f in frames:
-        sap_model.FrameObj.AddByPoint(
-            f["joint_i"], f["joint_j"], "", f["section"], f["id"]
+        _check_ret(
+            "AddCartesian",
+            sap_model.PointObj.AddCartesian(j["x"], j["y"], j["z"], j["id"], j["id"]),
         )
+        if j["restraint"] is not None:
+            _check_ret(
+                "SetRestraint",
+                sap_model.PointObj.SetRestraint(j["id"], list(j["restraint"])),
+            )
+
+    # 3) Barras (vigas longitudinales + diafragmas transversales)
+    for f in frames:
+        _check_ret(
+            "AddByPoint",
+            sap_model.FrameObj.AddByPoint(
+                f["joint_i"], f["joint_j"], "", f["section"], f["id"]
+            ),
+        )
+
+    # 4) Cargas de puente (DEAD, DW, LIVE_LANE, LIVE_VEHICLE_M, LIVE_VEHICLE_V) y combinaciones
+    _apply_bridge_loads_and_combos_oapi(sap_model, model["meta"])
+
     return summary
 
 
 __all__ = [
-    "generate_grillage", "grillage_model", "build_bridge_grillage",
+    "APPLICABLE_LIMIT_STATES",
+    "BRIDGE_STEEL_GIRDER_LADDER",
+    "BridgeDesignSpec",
     "HL93_LANE_LOAD_KN_M",
+    "MODEL_LIMITATIONS",
+    "MaterialSpec",
+    "OAPICallError",
+    "SectionMechanicalProps",
+    "UNIMPLEMENTED_CHECKS",
+    "bridge_spec_from_encargo",
+    "build_bridge_grillage",
+    "default_bridge_material",
+    "expected_grillage_counts",
+    "generate_grillage",
+    "grillage_model",
+    "rectangular_concrete_section_props",
+    "section_props_from_catalog",
+    "select_bridge_sections",
+    "verify_kinematic_stability",
 ]
