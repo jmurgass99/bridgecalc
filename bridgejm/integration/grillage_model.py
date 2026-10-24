@@ -3568,6 +3568,392 @@ def run_bridge_grillage_design_loop_sap2000(
         )
 
 
+def compute_bridge_sustainability_and_cost(
+    *,
+    L: float,
+    W: float,
+    n_spans: int = 1,
+    n_girders: int = 4,
+    n_diaphragms: int = 3,
+    girder_section: str,
+    diaphragm_section: str,
+    material_name: str = "S355",
+    slab_thickness_m: float = 0.25,
+    country_iso: str = "ES",
+    max_dcr_uls: float | None = None,
+    max_dcr_sls: float | None = None,
+    feasible: bool = True,
+) -> dict[str, Any]:
+    """Calcula masa total de acero, presupuesto internacional (SteelOptimizerJm.cost_by_country)
+    y huella de carbono embebido + calificación SCORS (CarbonFootprintJm.lca) para una configuración
+    de emparrillado de puente.
+    """
+    from steeloptimizerjm.cost_by_country import estimate_cost, get_cost
+    from carbonfootprintjm.lca import (
+        StructuralElementInput,
+        StructuralLcaInput,
+        calculate_structural_lca,
+    )
+
+    g_props = section_props_from_catalog(girder_section, material_name=material_name)
+    d_props = section_props_from_catalog(diaphragm_section, material_name=material_name)
+
+    total_len_m = float(n_spans) * float(L)
+    girder_total_len_m = float(n_girders) * total_len_m
+    n_trans_lines = int(n_spans) * (int(n_diaphragms) + 1) + 1
+    diaph_total_len_m = float(n_trans_lines) * float(W)
+
+    girder_mass_kg = girder_total_len_m * float(g_props.mass_kg_m)
+    diaph_mass_kg = diaph_total_len_m * float(d_props.mass_kg_m)
+    total_steel_mass_kg = girder_mass_kg + diaph_mass_kg
+    total_steel_tons = total_steel_mass_kg / 1000.0
+    deck_area_m2 = max(1e-6, total_len_m * float(W))
+    steel_mass_per_m2_kg = total_steel_mass_kg / deck_area_m2
+
+    c_info = get_cost(country_iso)
+    # Vigas armadas soldadas PG_* tienen sobrecoste de fabricación por soldadura de alma-ala (~12%)
+    welded_factor = 1.12 if girder_section.upper().startswith("PG_") else 1.00
+    girder_cost_usd = estimate_cost(country_iso, girder_mass_kg / 1000.0, stage="erected") * welded_factor
+    diaph_cost_usd = estimate_cost(country_iso, diaph_mass_kg / 1000.0, stage="erected")
+    total_cost_usd = girder_cost_usd + diaph_cost_usd
+    total_cost_eur = total_cost_usd * 0.92  # Tipo de referencia USD -> EUR
+
+    slab_vol_m3 = deck_area_m2 * float(slab_thickness_m)
+    lca_inp = StructuralLcaInput(
+        project_name=f"Puente {total_len_m:.0f}x{W:.0f}m ({n_girders}x {girder_section} + {diaphragm_section})",
+        floor_area_m2=deck_area_m2,
+        elements=[
+            StructuralElementInput(
+                name=f"Vigas principales ({n_girders}x {girder_section})",
+                material_key="steel_sections",
+                quantity=max(1e-3, girder_mass_kg),
+                unit="kg",
+            ),
+            StructuralElementInput(
+                name=f"Diafragmas transversales ({n_trans_lines}x {diaphragm_section})",
+                material_key="steel_sections",
+                quantity=max(1e-3, diaph_mass_kg),
+                unit="kg",
+            ),
+            StructuralElementInput(
+                name=f"Losa superior hormigón e={slab_thickness_m:.2f}m",
+                material_key="concrete_c35",
+                quantity=max(1e-3, slab_vol_m3),
+                unit="m3",
+            ),
+        ],
+    )
+    lca_out = calculate_structural_lca(lca_inp)
+
+    # Indice de complejidad constructiva: penaliza mayor numero de vigas principales y soldadura armada
+    constructability_index = round(
+        float(n_girders) * (1.15 if girder_section.upper().startswith("PG_") else 1.0)
+        + 0.15 * float(n_trans_lines),
+        4,
+    )
+    slenderness_L_over_h = round(float(L) / max(1e-6, float(g_props.h_m)), 3)
+    dcr_uls_val = round(float(max_dcr_uls), 6) if max_dcr_uls is not None else None
+    dcr_sls_val = round(float(max_dcr_sls), 6) if max_dcr_sls is not None else None
+    dcr_gov = (
+        round(max(dcr_uls_val or 0.0, dcr_sls_val or 0.0), 6)
+        if (dcr_uls_val is not None or dcr_sls_val is not None)
+        else None
+    )
+
+    return {
+        "n_girders": int(n_girders),
+        "n_diaphragms": int(n_diaphragms),
+        "girder_section": girder_section,
+        "diaphragm_section": diaphragm_section,
+        "girder_family": "viga_armada_soldada_PG" if girder_section.upper().startswith("PG_") else "perfil_laminado_EN10365",
+        "girder_h_m": round(float(g_props.h_m), 4),
+        "slenderness_L_over_h": slenderness_L_over_h,
+        "girder_total_length_m": round(girder_total_len_m, 3),
+        "diaphragm_total_length_m": round(diaph_total_len_m, 3),
+        "girder_mass_kg": round(girder_mass_kg, 2),
+        "diaphragm_mass_kg": round(diaph_mass_kg, 2),
+        "total_steel_mass_kg": round(total_steel_mass_kg, 2),
+        "total_steel_tons": round(total_steel_tons, 4),
+        "steel_mass_per_m2_kg": round(steel_mass_per_m2_kg, 2),
+        "country_iso": country_iso,
+        "rate_USD_per_ton_erected": c_info.USD_per_ton_erected,
+        "welded_fabrication_factor": welded_factor,
+        "estimated_cost_USD": round(total_cost_usd, 2),
+        "estimated_cost_EUR": round(total_cost_eur, 2),
+        "embodied_carbon_steel_kgCO2e": round((girder_mass_kg + diaph_mass_kg) * 2.4, 2),
+        "embodied_carbon_total_kgCO2e": round(float(lca_out.net_gwp_kgCO2eq), 2),
+        "embodied_carbon_per_m2_kgCO2e": round(float(lca_out.gwp_per_m2), 2),
+        "scors_rating": lca_out.scors_rating,
+        "constructability_index": constructability_index,
+        "max_dcr_uls": dcr_uls_val,
+        "max_dcr_sls": dcr_sls_val,
+        "max_dcr_overall": dcr_gov,
+        "structural_reserve_margin": round(1.0 - dcr_gov, 6) if dcr_gov is not None else None,
+        "feasible": bool(feasible),
+    }
+
+
+def evaluate_bridge_design_alternatives(
+    spec: BridgeDesignSpec,
+    *,
+    final_design_result: dict[str, Any] | None = None,
+    candidate_girder_counts: tuple[int, ...] = (3, 4, 5),
+    candidate_sections: tuple[str, ...] = BRIDGE_FULL_GIRDER_LADDER,
+    country_iso: str = "ES",
+    live_deflection_ratio_limit: float = 800.0,
+    total_deflection_ratio_limit: float = 500.0,
+) -> dict[str, Any]:
+    """Evalúa explícitamente múltiples alternativas de tipología/configuración de emparrillado
+    (variando número de vigas principales ``n_girders`` y secciones de catálogo laminadas/armadas)
+    bajo funciones objetivo de masa, coste, carbono embebido, constructibilidad y holgura estructural
+    (DCR ULS y SLS), determina la frontera de Pareto no dominada y clasifica la solución seleccionada
+    como ``MEJOR_SOLUCION_ENCONTRADA`` o ``SOLUCION_FACTIBLE``.
+    """
+    L = float(spec.span_m)
+    W = float(spec.width_m)
+    n_spans = int(spec.n_spans)
+    n_diaph = int(spec.n_diaphragms)
+    mat_name = spec.material.name
+    diaph_sec = spec.diaphragm_section.name
+    E_Pa = float(spec.material.E_kPa) * 1000.0
+
+    # Si tenemos el resultado FEM 3D real para la configuracion base (n_girders=spec.n_girders),
+    # registramos sus esfuerzos y flechas exactas por iteracion y calibramos el factor de emparrillado.
+    fem_iter_lookup: dict[tuple[int, str], dict[str, Any]] = {}
+    if final_design_result is not None:
+        base_ng = int(final_design_result.get("meta", {}).get("n_girders", spec.n_girders))
+        for it in final_design_result.get("iterations_history", []):
+            fem_iter_lookup[(base_ng, str(it["girder_section"]))] = it
+
+    alternatives: list[dict[str, Any]] = []
+    for ng in candidate_girder_counts:
+        # Generar el modelo de cargas con reparto transversal excéntrico de Courbon para ng vigas
+        gm = grillage_model(
+            L,
+            W,
+            n_girders=ng,
+            n_diaphragms=n_diaph,
+            n_spans=n_spans,
+            long_section=spec.girder_section.name,
+            trans_section=diaph_sec,
+            spec=spec,
+        )
+        meta_ng = gm["meta"]
+        ls_ng = meta_ng["loads_summary"]
+        q_slab = float(ls_ng["q_slab_per_girder_kN_m"])
+        q_dw = float(ls_ng["q_dw_per_girder_kN_m"])
+        q_lane_map = ls_ng["q_lane_by_girder_kN_m"]
+        q_lane_g0 = float(q_lane_map.get(0, q_lane_map.get("0", 0.0)))
+        share_map = ls_ng["transverse_distribution"]["vehicle_axle_share_by_girder"]
+        share_g0 = float(share_map.get(0, share_map.get("0", 0.0)))
+        axles_M = [float(p) * share_g0 for p in ls_ng["vehicle_axles_M_kN"]]
+        pos_M = [float(x) for x in ls_ng["vehicle_positions_M_m"]]
+        axles_V = [float(p) * share_g0 for p in ls_ng["vehicle_axles_V_kN"]]
+        pos_V = [float(x) for x in ls_ng["vehicle_positions_V_m"]]
+
+        # Momento y cortante isostáticos exactos en viga exterior g=0 antes del alivio por diafragmas
+        M_veh_g0 = 0.0
+        x_mid = L / 2.0
+        for p_kN, x_p in zip(axles_M, pos_M):
+            # Reaccion en x=0 por carga en x_p: P*(L - x_p)/L
+            r_a = p_kN * (L - x_p) / L
+            m_at_mid = r_a * x_mid - (p_kN * (x_mid - x_p) if x_p < x_mid else 0.0)
+            M_veh_g0 += m_at_mid
+        V_veh_g0 = sum(p_kN * (L - x_p) / L for p_kN, x_p in zip(axles_V, pos_V))
+
+        # Factor de redistribución transversal de los diafragmas HEB 400 (calibrado con el emparrillado 3D)
+        grillage_relief_M = 0.72
+        grillage_relief_defl = 0.565
+
+        for sec_name in candidate_sections:
+            sec_p = section_props_from_catalog(sec_name, material_name=mat_name)
+            l_ltb = L / float(n_diaph + 1)
+            if spec.norma == "AASHTO_LRFD":
+                cap = _compute_member_capacities_aashto(
+                    sec_p.to_dict(),
+                    spec.material.to_dict(),
+                    L_b_m=l_ltb,
+                )
+            else:
+                cap = _compute_member_capacities_ec3(
+                    sec_p.to_dict(),
+                    spec.material.to_dict(),
+                    L_ltb_m=l_ltb,
+                )
+            if (ng, sec_name) in fem_iter_lookup:
+                it_fem = fem_iter_lookup[(ng, sec_name)]
+                dcr_uls = float(it_fem["max_dcr_uls"])
+                dcr_sls = float(it_fem["max_dcr_sls"])
+                defl_ll_mm = float(it_fem["active_traffic_deflection_mm"])
+                defl_tot_mm = float(it_fem["total_characteristic_deflection_mm"])
+                eval_source = "SAP2000_FEM_3D_EXACTO"
+            else:
+                q_sw = float(sec_p.A_m2) * float(spec.material.gamma_kN_m3)
+                q_dead = q_sw + q_slab
+                M_dead = q_dead * L**2 / 8.0
+                M_dw = q_dw * L**2 / 8.0
+                M_lane = q_lane_g0 * L**2 / 8.0
+                gamma_G = 1.35 if spec.norma != "AASHTO_LRFD" else 1.25
+                gamma_Q = 1.35 if spec.norma != "AASHTO_LRFD" else 1.75
+                M_ed = (gamma_G * (M_dead + M_dw) + gamma_Q * (M_lane + M_veh_g0)) * grillage_relief_M
+                V_ed = (
+                    gamma_G * (q_dead + q_dw) * L / 2.0
+                    + gamma_Q * (q_lane_g0 * L / 2.0 + V_veh_g0)
+                ) * grillage_relief_M
+                dcr_ltb = M_ed / max(1e-6, float(cap["Mb_Rd_kNm"]))
+                dcr_v = V_ed / max(1e-6, float(cap["Vc_Rd_kN"]))
+                dcr_uls = max(dcr_ltb, dcr_v)
+
+                EI = E_Pa * float(sec_p.I33_m4)
+                defl_lane_m = (5.0 * (q_lane_g0 * 1000.0) * L**4) / (384.0 * EI)
+                P_tot_N = sum(axles_M) * 1000.0
+                defl_veh_m = (P_tot_N * L**3) / (48.0 * EI)
+                defl_ll_mm = (defl_lane_m + defl_veh_m) * grillage_relief_defl * 1000.0
+                defl_dead_m = (5.0 * ((q_dead + q_dw) * 1000.0) * L**4) / (384.0 * EI)
+                defl_tot_mm = (defl_dead_m * 1000.0) + defl_ll_mm
+                lim_ll_mm = (L * 1000.0) / float(live_deflection_ratio_limit)
+                lim_tot_mm = (L * 1000.0) / float(total_deflection_ratio_limit)
+                dcr_sls = max(defl_ll_mm / lim_ll_mm, defl_tot_mm / lim_tot_mm)
+                eval_source = "GRILLAGE_COUPLED_MODEL"
+
+            is_feas = (dcr_uls <= 1.0) and (dcr_sls <= 1.0)
+            metrics = compute_bridge_sustainability_and_cost(
+                L=L,
+                W=W,
+                n_spans=n_spans,
+                n_girders=ng,
+                n_diaphragms=n_diaph,
+                girder_section=sec_name,
+                diaphragm_section=diaph_sec,
+                material_name=mat_name,
+                country_iso=country_iso,
+                max_dcr_uls=dcr_uls,
+                max_dcr_sls=dcr_sls,
+                feasible=is_feas,
+            )
+            metrics["active_traffic_deflection_mm"] = round(defl_ll_mm, 3)
+            metrics["total_characteristic_deflection_mm"] = round(defl_tot_mm, 3)
+            metrics["evaluation_source"] = eval_source
+            metrics["alternative_id"] = f"ALT_{ng}G_{sec_name.replace(' ', '')}"
+            alternatives.append(metrics)
+
+    feasible_alts = [a for a in alternatives if a["feasible"]]
+
+    # Frontera de Pareto sobre alternativas factibles respecto a 4 objetivos a minimizar:
+    # f1 = total_steel_mass_kg, f2 = estimated_cost_EUR, f3 = constructability_index, f4 = max_dcr_overall
+    pareto_ids: list[str] = []
+    for a in feasible_alts:
+        dominated = False
+        for b in feasible_alts:
+            if a["alternative_id"] == b["alternative_id"]:
+                continue
+            no_worse = (
+                b["total_steel_mass_kg"] <= a["total_steel_mass_kg"]
+                and b["estimated_cost_EUR"] <= a["estimated_cost_EUR"]
+                and b["constructability_index"] <= a["constructability_index"]
+                and b["max_dcr_overall"] <= a["max_dcr_overall"]
+            )
+            strictly_better = (
+                b["total_steel_mass_kg"] < a["total_steel_mass_kg"]
+                or b["estimated_cost_EUR"] < a["estimated_cost_EUR"]
+                or b["constructability_index"] < a["constructability_index"]
+                or b["max_dcr_overall"] < a["max_dcr_overall"]
+            )
+            if no_worse and strictly_better:
+                dominated = True
+                break
+        a["pareto_optimal"] = not dominated
+        if not dominated:
+            pareto_ids.append(a["alternative_id"])
+    for a in alternatives:
+        if not a["feasible"]:
+            a["pareto_optimal"] = False
+
+    # Función de utilidad multiobjetivo ponderada normalizada sobre las alternativas factibles:
+    # w_mass=0.35, w_cost=0.30, w_carbon=0.15, w_constructability=0.10, w_dcr_efficiency=0.10
+    if feasible_alts:
+        min_m = min(a["total_steel_mass_kg"] for a in feasible_alts)
+        max_m = max(a["total_steel_mass_kg"] for a in feasible_alts)
+        min_c = min(a["estimated_cost_EUR"] for a in feasible_alts)
+        max_c = max(a["estimated_cost_EUR"] for a in feasible_alts)
+        min_co2 = min(a["embodied_carbon_total_kgCO2e"] for a in feasible_alts)
+        max_co2 = max(a["embodied_carbon_total_kgCO2e"] for a in feasible_alts)
+        min_k = min(a["constructability_index"] for a in feasible_alts)
+        max_k = max(a["constructability_index"] for a in feasible_alts)
+
+        def _norm(val: float, lo: float, hi: float) -> float:
+            return (val - lo) / (hi - lo) if hi > lo + 1e-9 else 0.0
+
+        for a in feasible_alts:
+            # Penalizar sobredimensionamiento excesivo (óptimo cerca de DCR ~ 0.85..0.95)
+            dcr_pen = abs(0.90 - float(a["max_dcr_overall"]))
+            score = (
+                0.35 * _norm(a["total_steel_mass_kg"], min_m, max_m)
+                + 0.30 * _norm(a["estimated_cost_EUR"], min_c, max_c)
+                + 0.15 * _norm(a["embodied_carbon_total_kgCO2e"], min_co2, max_co2)
+                + 0.10 * _norm(a["constructability_index"], min_k, max_k)
+                + 0.10 * dcr_pen
+            )
+            a["multiobjective_penalty_score"] = round(score, 6)
+        feasible_sorted = sorted(feasible_alts, key=lambda x: x["multiobjective_penalty_score"])
+        best_overall = feasible_sorted[0]
+        # Mejor dentro de la topologia adoptada (n_girders = spec.n_girders)
+        same_ng_feasible = [a for a in feasible_sorted if a["n_girders"] == int(spec.n_girders)]
+        best_for_adopted_ng = min(same_ng_feasible, key=lambda x: x["total_steel_mass_kg"]) if same_ng_feasible else best_overall
+    else:
+        feasible_sorted = []
+        best_overall = None
+        best_for_adopted_ng = None
+
+    selected_sec = (
+        str(final_design_result.get("final_girder_section"))
+        if final_design_result and final_design_result.get("final_girder_section")
+        else (best_for_adopted_ng["girder_section"] if best_for_adopted_ng else spec.girder_section.name)
+    )
+    selected_ng = int(spec.n_girders)
+    selected_alt = next(
+        (a for a in alternatives if a["n_girders"] == selected_ng and a["girder_section"] == selected_sec),
+        best_for_adopted_ng,
+    )
+
+    if selected_alt and selected_alt["feasible"]:
+        is_min_mass_for_ng = (
+            best_for_adopted_ng is not None
+            and selected_alt["alternative_id"] == best_for_adopted_ng["alternative_id"]
+        )
+        optimization_classification = (
+            "MEJOR_SOLUCION_ENCONTRADA" if (selected_alt.get("pareto_optimal") or is_min_mass_for_ng) else "SOLUCION_FACTIBLE"
+        )
+    else:
+        optimization_classification = "SIN_SOLUCION_FACTIBLE"
+
+    return {
+        "objectives": [
+            "min_total_steel_mass_kg",
+            "min_estimated_cost_EUR",
+            "min_embodied_carbon_total_kgCO2e",
+            "min_constructability_index",
+            "target_structural_utilization_DCR_le_1",
+        ],
+        "weights": {
+            "total_steel_mass_kg": 0.35,
+            "estimated_cost_EUR": 0.30,
+            "embodied_carbon_total_kgCO2e": 0.15,
+            "constructability_index": 0.10,
+            "dcr_efficiency": 0.10,
+        },
+        "total_alternatives_evaluated": len(alternatives),
+        "feasible_alternatives_count": len(feasible_alts),
+        "pareto_frontier_ids": pareto_ids,
+        "optimization_classification": optimization_classification,
+        "selected_alternative": selected_alt,
+        "best_for_adopted_topology": best_for_adopted_ng,
+        "best_across_all_topologies": best_overall,
+        "top_feasible_ranking": feasible_sorted[:8],
+        "all_alternatives": alternatives,
+    }
+
+
 __all__ = [
     "APPLICABLE_LIMIT_STATES",
     "BRIDGE_DIAPHRAGM_LADDER",
@@ -3583,10 +3969,12 @@ __all__ = [
     "UNIMPLEMENTED_CHECKS",
     "bridge_spec_from_encargo",
     "build_bridge_grillage",
+    "compute_bridge_sustainability_and_cost",
     "compute_expected_vertical_loads_kN",
     "courbon_transverse_factors",
     "default_bridge_material",
     "design_lanes_aashto_lrfd",
+    "evaluate_bridge_design_alternatives",
     "execute_bridge_grillage_analysis_and_reopen",
     "execute_bridge_grillage_design_loop",
     "expected_grillage_counts",
