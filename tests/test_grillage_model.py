@@ -676,3 +676,753 @@ def test_bridge_grillage_30m_live_sap2000(tmp_path):
 
     uls_v = res["summary_by_case"]["ULS_STR_SHEAR"]
     assert uls_v["girder_peaks_by_index"][0]["V2_max_kN"] > uls_v["girder_peaks_by_index"][3]["V2_max_kN"]
+
+
+# --------------------------------------------------------------------------- #
+# TAREA 4 — Verificacion normativa concurrente ULS/SLS y bucle cerrado de
+# redimensionamiento con catalogo extendido de vigas armadas PG_*
+# --------------------------------------------------------------------------- #
+def _make_synthetic_analysis_report(
+    *,
+    girder_section: str = "HEM 1000",
+    diaphragm_section: str = "HEB 400",
+    midspan_M3_kNm: float = 11014.12,
+    midspan_concurrent_V2_kN: float = 4.19,
+    support_V2_kN: float = 1478.68,
+    support_concurrent_M3_kNm: float = 0.0,
+    diaph_M3_kNm: float = 551.83,
+    diaph_V2_kN: float = 365.47,
+    live_defl_mm: float = 300.04,
+    total_defl_mm: float = 484.84,
+    run_ret: int = 0,
+    units: str = "kN_m_C",
+    equilibrium_ok: bool = True,
+) -> dict:
+    from jmworkbench.encargo import interpretar_encargo
+    from bridgejm.integration.grillage_model import (
+        bridge_spec_from_encargo,
+        build_bridge_grillage,
+        compute_expected_vertical_loads_kN,
+        section_props_from_catalog,
+    )
+
+    enc = interpretar_encargo(
+        "Diseña un puente de 30 m de luz.",
+        supuestos={
+            "norma": "EN 1991-2",
+            "uso": "carretera",
+            "ancho_tablero_o_carriles": "ancho de tablero 10 m",
+            "material": "acero",
+            "apoyos": "simplemente apoyado",
+            "galibo": "gálibo de 5,5 m",
+            "acciones": "LM1",
+        },
+    )
+    spec_base = bridge_spec_from_encargo(enc)
+    from dataclasses import replace
+    spec = replace(
+        spec_base,
+        girder_section=section_props_from_catalog(girder_section, material_name=spec_base.material.name),
+        diaphragm_section=section_props_from_catalog(diaphragm_section, material_name=spec_base.material.name),
+    )
+
+    summary = build_bridge_grillage(
+        None,
+        spec=spec,
+        preview_only=True,
+    )
+    meta = summary["meta"]
+    fz_map = compute_expected_vertical_loads_kN(meta)
+    eq_by_case = {
+        k: {
+            "applied_vertical_load_kN": v,
+            "sum_Rz_reactions_kN": v if equilibrium_ok else v * 0.5,
+            "abs_diff_kN": 0.0 if equilibrium_ok else v * 0.5,
+            "rel_error": 0.0 if equilibrium_ok else 0.5,
+            "sum_Rx_kN": 0.0,
+            "sum_Ry_kN": 0.0,
+            "sum_Rx_movable_abutment_kN": 0.0,
+            "equilibrium_ok": equilibrium_ok,
+        }
+        for k, v in fz_map.items()
+        if not k.startswith("DEAD_")
+    }
+    frame_forces = [
+        # Estacion en centro de vano (x = 15 m, L1_0 station 7.5 m)
+        {
+            "frame": "L1_0",
+            "role": "girder",
+            "station_m": 7.5,
+            "case": "ULS_STR",
+            "P_kN": 0.0,
+            "V2_kN": midspan_concurrent_V2_kN,
+            "V3_kN": 0.0,
+            "T_kNm": 3.07,
+            "M2_kNm": 0.0,
+            "M3_kNm": midspan_M3_kNm,
+        },
+        # Estacion en apoyo (x = 0 m, L0_0 station 0.0 m)
+        {
+            "frame": "L0_0",
+            "role": "girder",
+            "station_m": 0.0,
+            "case": "ULS_STR_SHEAR",
+            "P_kN": 0.0,
+            "V2_kN": -support_V2_kN,
+            "V3_kN": 0.0,
+            "T_kNm": 25.0,
+            "M2_kNm": 0.0,
+            "M3_kNm": support_concurrent_M3_kNm,
+        },
+        # Diafragma interior T2_0
+        {
+            "frame": "T2_0",
+            "role": "diaphragm",
+            "station_m": 1.6667,
+            "case": "ULS_STR",
+            "P_kN": 0.0,
+            "V2_kN": diaph_V2_kN,
+            "V3_kN": 0.0,
+            "T_kNm": 8.0,
+            "M2_kNm": 0.0,
+            "M3_kNm": diaph_M3_kNm,
+        },
+    ]
+    displacements = [
+        {
+            "joint": "N2_0",
+            "case": "LIVE_LANE",
+            "Ux_m": 0.0,
+            "Uy_m": 0.0,
+            "Uz_m": -0.4 * (live_defl_mm / 1000.0),
+            "Rx_rad": 0.0,
+            "Ry_rad": 0.0,
+            "Rz_rad": 0.0,
+        },
+        {
+            "joint": "N2_0",
+            "case": "LIVE_VEHICLE_M",
+            "Ux_m": 0.0,
+            "Uy_m": 0.0,
+            "Uz_m": -0.6 * (live_defl_mm / 1000.0),
+            "Rx_rad": 0.0,
+            "Ry_rad": 0.0,
+            "Rz_rad": 0.0,
+        },
+        {
+            "joint": "N2_0",
+            "case": "SLS_CHARACTERISTIC",
+            "Ux_m": 0.0,
+            "Uy_m": 0.0,
+            "Uz_m": -(total_defl_mm / 1000.0),
+            "Rx_rad": 0.0,
+            "Ry_rad": 0.0,
+            "Rz_rad": 0.0,
+        },
+    ]
+    reactions = [
+        {
+            "joint": "N0_0",
+            "case": "ULS_STR",
+            "Fx_kN": 0.0,
+            "Fy_kN": 0.0,
+            "Fz_kN": 1500.0,
+            "Mx_kNm": 0.0,
+            "My_kNm": 0.0,
+            "Mz_kNm": 0.0,
+        },
+        {
+            "joint": "N0_0",
+            "case": "ULS_STR_SHEAR",
+            "Fx_kN": 0.0,
+            "Fy_kN": 0.0,
+            "Fz_kN": 1700.0,
+            "Mx_kNm": 0.0,
+            "My_kNm": 0.0,
+            "Mz_kNm": 0.0,
+        },
+    ]
+    return {
+        "RunAnalysis_ret": run_ret,
+        "units": units,
+        "frames": summary["frames"],
+        "meta": meta,
+        "equilibrium_by_case": eq_by_case,
+        "frame_forces": frame_forces,
+        "displacements": displacements,
+        "reactions": reactions,
+    }
+
+
+def test_verificador_falla_seccion_insuficiente_hem1000():
+    """1. Fallo de sección insuficiente: HEM 1000 bajo las demandas reales del vano de 30 m
+    incumple tanto ULS (flexión y LTB) como SLS (flecha activa y total), devolviendo
+    CalculationStatus.CALCULADO_FALLA.
+    """
+    from jmstructural_common.audit_status import CalculationStatus
+    from bridgejm.integration.grillage_model import verify_bridge_grillage_results
+
+    rep = _make_synthetic_analysis_report(girder_section="HEM 1000")
+    verif = verify_bridge_grillage_results(rep)
+
+    assert verif["calculation_status"] == CalculationStatus.CALCULADO_FALLA
+    assert verif["implemented_checks_status"] == CalculationStatus.CALCULADO_FALLA.value
+    assert verif["max_dcr_uls"] > 2.0
+    assert verif["max_dcr_sls"] > 5.0
+    checks_by_id = {c["check_id"]: c for c in verif["checks"]}
+    assert checks_by_id["ELU_FLEXION_SECCION_VIGA"]["status"] == "CALCULADO_FALLA"
+    assert checks_by_id["ELU_PANDEO_LATERAL_TORSIONAL_LTB_VIGA"]["status"] == "CALCULADO_FALLA"
+    assert checks_by_id["ELS_FLECHA_ACTIVA_TRAFICO"]["status"] == "CALCULADO_FALLA"
+
+
+def test_verificador_interaccion_concurrente_m_v_n_misma_estacion():
+    """2. Interacción concurrente en la misma estación y combinación:
+    - Cuando V2 <= 0.5 * Vc,Rd en la estación de máximo momento (x=15 m), rho=0 y no se penaliza
+      artificialmente Mc,Rd con el cortante máximo del apoyo (x=0 m).
+    - Cuando en la MISMA estación concurren M3 elevado y V2 > 0.5 * Vc,Rd, rho > 0 reduce Mc,Rd y Mb,Rd
+      incrementando el DCR de interacción concurrente M-V-N.
+    """
+    from bridgejm.integration.grillage_model import verify_bridge_grillage_results
+
+    # Caso A: M3=3500 kN*m en centro de vano con V2 concurrente bajo (10 kN), aunque en el apoyo V2=1800 kN
+    rep_low_v_concurrent = _make_synthetic_analysis_report(
+        girder_section="HEM 1000",
+        midspan_M3_kNm=3500.0,
+        midspan_concurrent_V2_kN=10.0,
+        support_V2_kN=1800.0,
+        support_concurrent_M3_kNm=50.0,
+        live_defl_mm=20.0,
+        total_defl_mm=30.0,
+    )
+    verif_a = verify_bridge_grillage_results(rep_low_v_concurrent)
+    mvn_a = next(c for c in verif_a["checks"] if c["check_id"] == "ELU_INTERACCION_CONCURRENTE_M_V_N_VIGA")
+    assert mvn_a["rho_shear_reduction"] == pytest.approx(0.0)
+
+    # Caso B: en la MISMA estacion concurren M3=3500 kN*m y V2=3200 kN (> 0.5 * Vc,Rd de HEM 1000)
+    rep_high_v_concurrent = _make_synthetic_analysis_report(
+        girder_section="HEM 1000",
+        midspan_M3_kNm=3500.0,
+        midspan_concurrent_V2_kN=3200.0,
+        support_V2_kN=1800.0,
+        support_concurrent_M3_kNm=50.0,
+        live_defl_mm=20.0,
+        total_defl_mm=30.0,
+    )
+    verif_b = verify_bridge_grillage_results(rep_high_v_concurrent)
+    mvn_b = next(c for c in verif_b["checks"] if c["check_id"] == "ELU_INTERACCION_CONCURRENTE_M_V_N_VIGA")
+    assert mvn_b["rho_shear_reduction"] > 0.20
+    assert mvn_b["dcr"] > mvn_a["dcr"]
+
+
+def test_verificador_analisis_invalido_o_resultados_incompletos_no_calculado():
+    """5. Análisis inválido o resultados incompletos producen CalculationStatus.NO_CALCULADO."""
+    from jmstructural_common.audit_status import CalculationStatus
+    from bridgejm.integration.grillage_model import verify_bridge_grillage_results
+
+    # RunAnalysis_ret != 0
+    rep_bad_rc = _make_synthetic_analysis_report(run_ret=1)
+    res_bad_rc = verify_bridge_grillage_results(rep_bad_rc)
+    assert res_bad_rc["calculation_status"] == CalculationStatus.NO_CALCULADO
+    assert res_bad_rc["implemented_checks_status"] == "NO_CALCULADO"
+
+    # Esfuerzos vacios
+    rep_empty = _make_synthetic_analysis_report()
+    rep_empty["frame_forces"] = []
+    res_empty = verify_bridge_grillage_results(rep_empty)
+    assert res_empty["calculation_status"] == CalculationStatus.NO_CALCULADO
+
+    # Equilibrio roto
+    rep_bad_eq = _make_synthetic_analysis_report(equilibrium_ok=False)
+    res_bad_eq = verify_bridge_grillage_results(rep_bad_eq)
+    assert res_bad_eq["calculation_status"] == CalculationStatus.NO_CALCULADO
+
+
+def test_conservacion_salvedades_y_estado_requiere_revision_cuando_implementados_cumplen():
+    """6. Conservación de salvedades y estados límite no implementados:
+    Cuando una viga armada PG_2100x700x55x30 cumple todos los estados límite implementados
+    (DCR_ULS <= 1.0 y DCR_SLS <= 1.0), implemented_checks_status == 'CALCULADO_CUMPLE',
+    pero calculation_status global es CalculationStatus.REQUIERE_REVISION porque persisten
+    comprobaciones obligatorias de puente en unimplemented_checks.
+    """
+    from jmstructural_common.audit_status import CalculationStatus
+    from bridgejm.integration.grillage_model import verify_bridge_grillage_results
+
+    rep_ok = _make_synthetic_analysis_report(
+        girder_section="PG_2100x700x55x30",
+        diaphragm_section="HEB 400",
+        midspan_M3_kNm=12200.0,
+        midspan_concurrent_V2_kN=15.0,
+        support_V2_kN=1580.0,
+        diaph_M3_kNm=550.0,
+        diaph_V2_kN=365.0,
+        live_defl_mm=18.5,
+        total_defl_mm=33.0,
+    )
+    verif = verify_bridge_grillage_results(rep_ok)
+    assert verif["max_dcr_uls"] <= 1.0
+    assert verif["max_dcr_sls"] <= 1.0
+    assert verif["implemented_checks_status"] == CalculationStatus.CALCULADO_CUMPLE.value
+    assert len(verif["unimplemented_checks"]) >= 4
+    assert verif["calculation_status"] == CalculationStatus.REQUIERE_REVISION
+
+
+class _StatefulBridgeSapMock:
+    """Mock con estado físico simplificado de SAP2000 para probar en tests unitarios rápidos
+    el bucle cerrado de redimensionamiento, desbloqueo del modelo, actualización de secciones,
+    verificación GetSectProps, recálculo de peso propio y flecha inversamente proporcional a I33.
+    """
+    def __init__(self):
+        from pathlib import Path
+        self.locked = False
+        self.materials = {}
+        self.sections = {}
+        self.points = {}
+        self.restraints = {}
+        self.frames = {}
+        self.patterns = {}
+        self.combos = {}
+        self.saved_paths = []
+        self.run_count = 0
+        self.unlock_count = 0
+        mock = self
+
+        class cPropMaterial:
+            def SetMaterial(self, name, mat_type):
+                mock.materials[name] = {"type": mat_type}
+                return 0
+
+            def SetMPIsotropic(self, name, e, nu, alpha):
+                mock.materials.setdefault(name, {}).update({"E": e, "nu": nu, "alpha": alpha})
+                return 0
+
+            def SetWeightAndMass(self, name, opt, val):
+                mock.materials.setdefault(name, {})["gamma"] = val
+                return 0
+
+            def GetNameList(self, num, names):
+                ks = list(mock.materials.keys())
+                return (0, len(ks), ks)
+
+        class cPropFrame:
+            def SetISection(self, name, mat, t3, t2, tf, tw, t2b, tfb):
+                hw = max(0.0, t3 - 2.0 * tf)
+                area = 2.0 * t2 * tf + hw * tw
+                i33 = (t2 * (t3 ** 3) - (t2 - tw) * (hw ** 3)) / 12.0
+                i22 = (2.0 * tf * (t2 ** 3) + hw * (tw ** 3)) / 12.0
+                j = (2.0 * t2 * (tf ** 3) + hw * (tw ** 3)) / 3.0
+                s33 = i33 / (0.5 * t3)
+                z33 = t2 * tf * (t3 - tf) + 0.25 * tw * (hw ** 2)
+                s22 = i22 / (0.5 * t2)
+                z22 = 0.5 * tf * (t2 ** 2) + 0.25 * hw * (tw ** 2)
+                as2 = t3 * tw
+                as3 = (5.0 / 6.0) * 2.0 * t2 * tf
+                r22 = (i22 / area) ** 0.5
+                r33 = (i33 / area) ** 0.5
+                mock.sections[name] = {
+                    "mat": mat, "t3": t3, "t2": t2, "tf": tf, "tw": tw,
+                    "props": (area, as2, as3, j, i22, i33, s22, s33, z22, z33, r22, r33),
+                }
+                return 0
+
+            def GetSectProps(self, name, *args):
+                p = mock.sections[name]["props"]
+                return (0, *p)
+
+            def GetNameList(self, num, names):
+                ks = list(mock.sections.keys())
+                return (0, len(ks), ks)
+
+        class cPointObj:
+            def AddCartesian(self, x, y, z, name, uname):
+                mock.points[uname] = (float(x), float(y), float(z))
+                return (0, uname)
+
+            def SetRestraint(self, name, vals):
+                mock.restraints[name] = list(vals)
+                return 0
+
+            def GetRestraint(self, name, vals):
+                return (0, mock.restraints.get(name, [False] * 6))
+
+            def GetCoordCartesian(self, name, x=0.0, y=0.0, z=0.0):
+                pt = mock.points[name]
+                return (0, pt[0], pt[1], pt[2])
+
+            def Count(self):
+                return len(mock.points)
+
+        class cFrameObj:
+            def AddByPoint(self, ji, jj, prop, section, name):
+                mock.frames[name] = {"ji": ji, "jj": jj, "section": section}
+                return (0, name)
+
+            def SetSection(self, name, sec_name):
+                if mock.locked:
+                    return 1  # SAP2000 falla si el modelo sigue bloqueado
+                mock.frames[name]["section"] = sec_name
+                return 0
+
+            def GetSection(self, name, prop="", auto=""):
+                return (0, mock.frames[name]["section"], "")
+
+            def GetPoints(self, name, pi="", pj=""):
+                f = mock.frames[name]
+                return (0, f["ji"], f["jj"])
+
+            def SetOutputStations(self, *args):
+                return 0
+
+            def SetLoadDistributed(self, *args):
+                return 0
+
+            def SetLoadPoint(self, *args):
+                return 0
+
+            def Count(self):
+                return len(mock.frames)
+
+        class _LoadPatterns:
+            def Add(self, name, my_type, sw_mult=0.0, add_case=True):
+                mock.patterns[name] = (my_type, sw_mult)
+                return 0
+
+            def GetNameList(self, num, names):
+                ks = list(mock.patterns.keys())
+                return (0, len(ks), ks)
+
+        class _RespCombo:
+            def Add(self, name, combo_type):
+                mock.combos[name] = {}
+                return 0
+
+            def SetCaseList(self, name, cname_type, cname, sf):
+                mock.combos.setdefault(name, {})[cname] = float(sf)
+                return 0
+
+            def GetNameList(self, num, names):
+                ks = list(mock.combos.keys())
+                return (0, len(ks), ks)
+
+        class _File:
+            def Save(self, path):
+                Path(path).write_bytes(b"SAP2000_MOCK_SDB_BINARY_HEADER" * 40)
+                mock.saved_paths.append(path)
+                return 0
+
+            def NewBlank(self):
+                return 0
+
+            def OpenFile(self, path):
+                return 0 if Path(path).exists() else 1
+
+        class _Analyze:
+            def SetRunCaseFlag(self, name, flag, all_flag=True):
+                return 0
+
+            def RunAnalysis(self):
+                mock.locked = True
+                mock.run_count += 1
+                return 0
+
+        class _Setup:
+            def DeselectAllCasesAndCombosForOutput(self):
+                return 0
+
+            def SetCaseSelectedForOutput(self, name):
+                return 0
+
+            def SetComboSelectedForOutput(self, name):
+                return 0
+
+        class _Results:
+            def __init__(self):
+                self.Setup = _Setup()
+
+            def JointReact(self, name, item_type, *args):
+                # Devolver 1/8 de la carga vertical esperada en cada uno de los 8 apoyos
+                from bridgejm.integration.grillage_model import (
+                    compute_expected_vertical_loads_kN,
+                    section_props_from_catalog,
+                )
+                g_sec = mock.frames["L0_0"]["section"]
+                d_sec = mock.frames["T0_0"]["section"]
+                g_p = section_props_from_catalog(g_sec).to_dict()
+                d_p = section_props_from_catalog(d_sec).to_dict()
+                meta_tmp = {
+                    "material": {"gamma_kN_m3": 78.5},
+                    "sections": {g_sec: g_p, d_sec: d_p},
+                    "total_length": 30.0,
+                    "width_m": 10.0,
+                    "n_girders": 4,
+                    "derived_counts": {"n_x": 5},
+                    "loads_summary": {
+                        "q_slab_per_girder_kN_m": 15.625,
+                        "q_dw_per_girder_kN_m": 6.25,
+                        "q_lane_per_girder_kN_m": 11.125,
+                        "q_lane_by_girder_kN_m": {0: 17.225, 1: 13.158333, 2: 9.091667, 3: 5.025},
+                        "frame_point_loads_LIVE_VEHICLE_M": [{"load_kN": 1200.0}],
+                        "frame_point_loads_LIVE_VEHICLE_V": [{"load_kN": 1200.0}],
+                        "combinations": [
+                            {"name": "ULS_STR", "factors": {"DEAD": 1.35, "DW": 1.35, "LIVE_LANE": 1.35, "LIVE_VEHICLE_M": 1.35}},
+                            {"name": "ULS_STR_SHEAR", "factors": {"DEAD": 1.35, "DW": 1.35, "LIVE_LANE": 1.35, "LIVE_VEHICLE_V": 1.35}},
+                            {"name": "SLS_CHARACTERISTIC", "factors": {"DEAD": 1.0, "DW": 1.0, "LIVE_LANE": 1.0, "LIVE_VEHICLE_M": 1.0}},
+                        ],
+                    },
+                }
+                fz = compute_expected_vertical_loads_kN(meta_tmp)
+                cases = ["DEAD", "DW", "LIVE_LANE", "LIVE_VEHICLE_M", "LIVE_VEHICLE_V", "ULS_STR", "ULS_STR_SHEAR", "SLS_CHARACTERISTIC"]
+                n = len(cases)
+                return (
+                    0, n, [name] * n, [""] * n, cases, ["LinStatic"] * n, [0.0] * n,
+                    [0.0] * n, [0.0] * n, [fz[c] / 8.0 for c in cases],
+                    [0.0] * n, [0.0] * n, [0.0] * n,
+                )
+
+            def JointDispl(self, name, item_type, *args):
+                # Flecha inversamente proporcional a I33 de la viga principal
+                g_sec = mock.frames["L0_0"]["section"]
+                i33 = mock.sections[g_sec]["props"][5]
+                i33_ref = 0.005926  # HEM 1000
+                ratio = i33_ref / max(1e-9, i33)
+                cases = ["DEAD", "DW", "LIVE_LANE", "LIVE_VEHICLE_M", "LIVE_VEHICLE_V", "ULS_STR", "ULS_STR_SHEAR", "SLS_CHARACTERISTIC"]
+                uz_ref = {
+                    "DEAD": -0.130,
+                    "DW": -0.054,
+                    "LIVE_LANE": -0.1237,
+                    "LIVE_VEHICLE_M": -0.1763,
+                    "LIVE_VEHICLE_V": -0.015,
+                    "ULS_STR": -0.654,
+                    "ULS_STR_SHEAR": -0.435,
+                    "SLS_CHARACTERISTIC": -0.4848,
+                }
+                n = len(cases)
+                return (
+                    0, n, [name] * n, [""] * n, cases, ["LinStatic"] * n, [0.0] * n,
+                    [0.0] * n, [0.0] * n, [uz_ref[c] * ratio if name.startswith("N2_") else 0.0 for c in cases],
+                    [0.0] * n, [0.0] * n, [0.0] * n,
+                )
+
+            def FrameForce(self, name, item_type, *args):
+                g_sec = mock.frames["L0_0"]["section"]
+                area = mock.sections[g_sec]["props"][0]
+                area_ref = 0.031536  # HEM 1000
+                # El momento por peso propio crece ligeramente con el area de la viga
+                m3_uls = 11014.12 + (area - area_ref) * 78.5 * (30.0 ** 2 / 8.0) * 1.35
+                v2_uls = 1478.68 + (area - area_ref) * 78.5 * (30.0 / 2.0) * 1.35
+                is_girder = name.startswith("L")
+                cases = ["ULS_STR", "ULS_STR_SHEAR"]
+                n = len(cases)
+                m3_vals = [m3_uls if is_girder else 551.8, 200.0 if is_girder else 300.0]
+                v2_vals = [10.0 if is_girder else 365.5, -v2_uls if is_girder else 250.0]
+                return (
+                    0, n, [name] * n, [3.75] * n, [name] * n, [3.75] * n,
+                    cases, ["Combo"] * n, [0.0] * n,
+                    [0.0] * n, v2_vals, [0.0] * n, [3.0] * n, [0.0] * n, m3_vals,
+                )
+
+        self.PropMaterial = cPropMaterial()
+        self.PropFrame = cPropFrame()
+        self.PointObj = cPointObj()
+        self.FrameObj = cFrameObj()
+        self.LoadPatterns = _LoadPatterns()
+        self.RespCombo = _RespCombo()
+        self.File = _File()
+        self.Analyze = _Analyze()
+        self.Results = _Results()
+
+    def SetModelIsLocked(self, flag: bool):
+        self.locked = bool(flag)
+        if not self.locked:
+            self.unlock_count += 1
+        return 0
+
+
+def test_bucle_redimensionamiento_actualiza_propiedades_reanaliza_y_converge(tmp_path):
+    """3. Actualización del modelo y reanálisis cuando se cambia la sección en el bucle:
+    Verifica que el bucle detecta el fallo de HEM 1000, desbloquea el modelo (SetModelIsLocked(False)),
+    registra y verifica con GetSectProps cada nueva sección candidata PG_*, actualiza todas las barras L*,
+    re-ejecuta RunAnalysis() y converge en una sección armada PG_* con DCR_ULS <= 1.0 y DCR_SLS <= 1.0.
+    """
+    from jmworkbench.encargo import interpretar_encargo
+    from bridgejm.integration.grillage_model import (
+        bridge_spec_from_encargo,
+        execute_bridge_grillage_design_loop,
+    )
+
+    enc = interpretar_encargo(
+        "Diseña un puente de 30 m de luz.",
+        supuestos={
+            "norma": "EN 1991-2",
+            "uso": "carretera",
+            "ancho_tablero_o_carriles": "ancho de tablero 10 m",
+            "material": "acero",
+            "apoyos": "simplemente apoyado",
+            "galibo": "gálibo de 5,5 m",
+            "acciones": "LM1",
+        },
+    )
+    spec = bridge_spec_from_encargo(enc)
+    mock_sap = _StatefulBridgeSapMock()
+    sdb_file = tmp_path / "bucle_convergencia.sdb"
+    ladder = ("HEM 1000", "PG_1500x550x40x24", "PG_1900x650x50x28", "PG_2100x700x55x30")
+
+    res = execute_bridge_grillage_design_loop(
+        mock_sap,
+        str(sdb_file),
+        spec=spec,
+        candidate_girder_ladder=ladder,
+    )
+
+    assert res["initial_girder_section"] == "HEM 1000"
+    assert res["final_girder_section"] == "PG_1900x650x50x28"
+    assert res["n_iterations"] == 3
+    assert mock_sap.run_count == 3
+    assert mock_sap.unlock_count == 2
+    assert res["termination_reason"] == "CONVERGED_ALL_IMPLEMENTED_CHECKS_PASS"
+    assert res["implemented_checks_status"] == "CALCULADO_CUMPLE"
+    assert res["calculation_status"] == "REQUIERE_REVISION"
+    assert res["persistence_verdict"] == {"veredicto": "OK", "motivos": []}
+
+    # Verificar que el peso propio DEAD y la inercia I33 crecen en cada iteracion y el DCR baja
+    hist = res["iterations_history"]
+    assert hist[0]["girder_section"] == "HEM 1000"
+    assert hist[0]["implemented_checks_status"] == "CALCULADO_FALLA"
+    assert hist[-1]["girder_section"] == "PG_1900x650x50x28"
+    assert hist[-1]["implemented_checks_status"] == "CALCULADO_CUMPLE"
+    assert hist[-1]["DEAD_total_kN"] > hist[0]["DEAD_total_kN"]
+    assert hist[-1]["active_traffic_deflection_mm"] < hist[0]["active_traffic_deflection_mm"]
+    assert hist[-1]["max_dcr_overall"] <= 1.0
+
+
+def test_bucle_redimensionamiento_agotamiento_catalogo_calculado_falla(tmp_path):
+    """4. Agotamiento de catálogo sin convergencia:
+    Si la escalera permitida solo contiene perfiles laminados hasta HEM 1000, el bucle
+    agota el catálogo y termina limpiamente con CalculationStatus.CALCULADO_FALLA y
+    termination_reason == 'CATALOG_EXHAUSTED'.
+    """
+    from dataclasses import replace
+    from jmworkbench.encargo import interpretar_encargo
+    from bridgejm.integration.grillage_model import (
+        bridge_spec_from_encargo,
+        execute_bridge_grillage_design_loop,
+        section_props_from_catalog,
+    )
+
+    enc = interpretar_encargo(
+        "Diseña un puente de 30 m de luz.",
+        supuestos={
+            "norma": "EN 1991-2",
+            "uso": "carretera",
+            "ancho_tablero_o_carriles": "ancho de tablero 10 m",
+            "material": "acero",
+            "apoyos": "simplemente apoyado",
+            "galibo": "gálibo de 5,5 m",
+            "acciones": "LM1",
+        },
+    )
+    spec_base = bridge_spec_from_encargo(enc)
+    spec_heb900 = replace(
+        spec_base,
+        girder_section=section_props_from_catalog("HEB 900", material_name=spec_base.material.name),
+    )
+    mock_sap = _StatefulBridgeSapMock()
+    sdb_file = tmp_path / "bucle_agotado.sdb"
+    short_ladder = ("HEB 900", "HEM 1000")
+
+    res = execute_bridge_grillage_design_loop(
+        mock_sap,
+        str(sdb_file),
+        spec=spec_heb900,
+        candidate_girder_ladder=short_ladder,
+    )
+
+    assert res["termination_reason"] == "CATALOG_EXHAUSTED"
+    assert res["implemented_checks_status"] == "CALCULADO_FALLA"
+    assert res["calculation_status"] == "CALCULADO_FALLA"
+    assert res["n_iterations"] == 2
+    assert res["final_girder_section"] == "HEM 1000"
+
+
+@pytest.mark.compat
+@pytest.mark.live
+def test_bridge_grillage_30m_closed_loop_resize_live_sap2000(tmp_path):
+    """Test LIVE en SAP2000 v26 del bucle completo de verificación ULS/SLS y redimensionamiento
+    iterativo del puente de 30 m x 10 m desde HEM 1000 hasta convergencia en viga armada PG_*.
+    """
+    from pathlib import Path
+    import json
+    import shutil
+    from jmworkbench.encargo import interpretar_encargo
+    from bridgejm.integration.grillage_model import (
+        bridge_spec_from_encargo,
+        run_bridge_grillage_design_loop_sap2000,
+    )
+
+    sap_exe = Path(r"C:\Program Files\Computers and Structures\SAP2000 26\SAP2000.exe")
+    if not sap_exe.exists():
+        pytest.skip(f"SAP2000 v26 no instalado en {sap_exe}")
+
+    enc = interpretar_encargo(
+        "Diseña un puente de 30 m de luz que cumpla la normativa aplicable. "
+        "Selecciona una tipología estructural adecuada, define la geometría, "
+        "predimensiona y selecciona las secciones, establece materiales, apoyos, "
+        "cargas y combinaciones, genera el modelo en SAP2000, ejecuta el análisis, "
+        "verifica los estados límite, corrige las secciones si es necesario y "
+        "entrega el modelo en SAP2000 con sus resultados y sus planos en AutoCAD.",
+        supuestos={
+            "norma": "EN 1991-2",
+            "uso": "carretera",
+            "ancho_tablero_o_carriles": "ancho de tablero 10 m",
+            "material": "acero",
+            "apoyos": "simplemente apoyado",
+            "galibo": "gálibo de 5,5 m",
+            "acciones": "LM1",
+        },
+    )
+    spec = bridge_spec_from_encargo(enc)
+    sdb_file = tmp_path / "puente_30m_emparrillado_redimensionado_live.sdb"
+
+    res = run_bridge_grillage_design_loop_sap2000(
+        str(sdb_file),
+        spec=spec,
+        visible=False,
+        keep_open=False,
+    )
+
+    assert Path(res["sdb_path"]).exists()
+    assert res["sdb_size_bytes"] > 1000
+    assert res["RunAnalysis_ret"] == 0
+    assert res["initial_girder_section"] == "HEM 1000"
+    assert res["final_girder_section"].startswith("PG_")
+    assert res["n_iterations"] >= 2
+    assert res["termination_reason"] == "CONVERGED_ALL_IMPLEMENTED_CHECKS_PASS"
+    assert res["implemented_checks_status"] == "CALCULADO_CUMPLE"
+    assert res["calculation_status"] == "REQUIERE_REVISION"
+    assert res["persistence_verdict"] == {"veredicto": "OK", "motivos": []}
+
+    # Iteracion 0 (HEM 1000) debe fallar con DCR > 1.0; iteracion final debe cumplir con DCR <= 1.0
+    hist = res["iterations_history"]
+    assert hist[0]["girder_section"] == "HEM 1000"
+    assert hist[0]["implemented_checks_status"] == "CALCULADO_FALLA"
+    assert hist[0]["max_dcr_uls"] > 1.0
+    assert hist[0]["max_dcr_sls"] > 1.0
+
+    assert hist[-1]["girder_section"] == res["final_girder_section"]
+    assert hist[-1]["implemented_checks_status"] == "CALCULADO_CUMPLE"
+    assert hist[-1]["max_dcr_uls"] <= 1.0
+    assert hist[-1]["max_dcr_sls"] <= 1.0
+    assert hist[-1]["sap_section_verification"]["girder"]["verified_via_oapi"] is True
+    assert hist[-1]["sap_section_verification"]["girder"]["max_rel_diff"] < 0.01
+
+    # Equilibrio global exacto en todas las combinaciones del modelo final
+    for case_name, eq in res["equilibrium_by_case"].items():
+        assert eq["equilibrium_ok"] is True, f"Equilibrio fallo en {case_name}: {eq}"
+        assert eq["rel_error"] < 1e-4
+
+    # Persistir artefactos finales auditables
+    artifact_dir = Path(r"C:\Users\jesus\.gemini\antigravity\brain\7806a750-479b-4040-af0a-39e35ddb12b8\scratch")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(res["sdb_path"], artifact_dir / "puente_30m_emparrillado_redimensionado_sap2000_v26.sdb")
+    (artifact_dir / "puente_30m_emparrillado_redimensionado_sap2000_v26_report.json").write_text(
+        json.dumps(res, indent=2, ensure_ascii=False), encoding="utf-8"
+    )

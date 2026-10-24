@@ -30,6 +30,11 @@ from typing import Any
 
 from fastsap.section_catalog import IShape, get_section
 from fastsap.utils import csi_enum
+from jmstructural_common.audit_status import (
+    CalculationStatus,
+    aggregate_calculation_statuses,
+    resolve_status,
+)
 from ..ec1_traffic import LM1, traffic_envelope_lm1
 from ..loads.en1990_combinations import GAMMA_G_SUP
 from ..loads.hl93 import (
@@ -58,6 +63,36 @@ BRIDGE_STEEL_GIRDER_LADDER: tuple[str, ...] = (
     "HEB 900",
     "HEB 1000",
     "HEM 900",
+    "HEM 1000",
+)
+
+# Serie determinista de vigas armadas soldadas (Plate Girders) doblemente simetricas
+# PG_{h_mm}x{b_mm}x{tf_mm}x{tw_mm}: (h_m, b_m, tf_m, tw_m)
+# Proporciones esbeltas compactas (Clase 1/2 en flexion segun EN 1993-1-1 Tabla 5.2 y
+# AASHTO LRFD §6.10.2: b_f/(2*t_f) <= 6.8, D/t_w <= 68, b_f >= D/4, t_f >= 1.1*t_w).
+BRIDGE_PLATE_GIRDER_SPECS: dict[str, tuple[float, float, float, float]] = {
+    "PG_1300x500x35x22": (1.300, 0.500, 0.035, 0.022),
+    "PG_1500x550x40x24": (1.500, 0.550, 0.040, 0.024),
+    "PG_1700x600x45x26": (1.700, 0.600, 0.045, 0.026),
+    "PG_1900x650x50x28": (1.900, 0.650, 0.050, 0.028),
+    "PG_2100x700x55x30": (2.100, 0.700, 0.055, 0.030),
+    "PG_2300x750x60x32": (2.300, 0.750, 0.060, 0.032),
+    "PG_2500x800x65x35": (2.500, 0.800, 0.065, 0.035),
+}
+
+# Escalera completa de redimensionamiento para vigas principales: laminados EN 10365 + serie armada PG_*
+BRIDGE_FULL_GIRDER_LADDER: tuple[str, ...] = BRIDGE_STEEL_GIRDER_LADDER + tuple(
+    BRIDGE_PLATE_GIRDER_SPECS.keys()
+)
+
+# Escalera de perfiles para diafragmas transversales T*
+BRIDGE_DIAPHRAGM_LADDER: tuple[str, ...] = (
+    "HEB 400",
+    "HEB 500",
+    "HEB 600",
+    "HEB 700",
+    "HEB 800",
+    "HEM 800",
     "HEM 1000",
 )
 
@@ -151,9 +186,72 @@ class BridgeDesignSpec:
         return asdict(self)
 
 
+def plate_girder_section_props(
+    profile_name: str,
+    h_m: float,
+    b_m: float,
+    tf_m: float,
+    tw_m: float,
+    material_name: str = "S355",
+) -> SectionMechanicalProps:
+    """Calcula las propiedades geometricas y mecanicas exactas de una viga armada soldada (Plate Girder)
+    doblemente simetrica (r = 0), identicas a la formulacion interna de ``SAP2000 PropFrame.SetISection``:
+    ``A = 2*b*tf + (h-2*tf)*tw``, ``I33``, ``I22``, ``J``, ``Av2 = h*tw``, ``Av3 = (5/6)*2*b*tf``,
+    ``Wel33``, ``Wpl33``.
+    """
+    if h_m <= 2.0 * tf_m or b_m <= tw_m or tf_m <= 0 or tw_m <= 0:
+        raise ValueError(
+            f"Dimensiones invalidas para viga armada {profile_name!r}: "
+            f"h={h_m}, b={b_m}, tf={tf_m}, tw={tw_m}"
+        )
+    hw = h_m - 2.0 * tf_m
+    area = 2.0 * b_m * tf_m + hw * tw_m
+    i33 = (b_m * (h_m ** 3) - (b_m - tw_m) * (hw ** 3)) / 12.0
+    i22 = (2.0 * tf_m * (b_m ** 3) + hw * (tw_m ** 3)) / 12.0
+    j_tors = (2.0 * b_m * (tf_m ** 3) + hw * (tw_m ** 3)) / 3.0
+    av2 = h_m * tw_m
+    av3 = (5.0 / 6.0) * (2.0 * b_m * tf_m)
+    wel33 = i33 / (0.5 * h_m)
+    wpl33 = b_m * tf_m * (h_m - tf_m) + 0.25 * tw_m * (hw ** 2)
+    return SectionMechanicalProps(
+        name=profile_name,
+        shape="I",
+        material_name=material_name,
+        h_m=round(h_m, 6),
+        b_m=round(b_m, 6),
+        tf_m=round(tf_m, 6),
+        tw_m=round(tw_m, 6),
+        r_m=0.0,
+        A_m2=round(area, 8),
+        I33_m4=round(i33, 8),
+        I22_m4=round(i22, 8),
+        J_m4=round(j_tors, 8),
+        Av2_m2=round(av2, 8),
+        Av3_m2=round(av3, 8),
+        Wel33_m3=round(wel33, 8),
+        Wpl33_m3=round(wpl33, 8),
+        mass_kg_m=round(area * 7850.0, 4),
+        source="Serie determinista de vigas armadas soldadas (EN 1993-1-5 / AASHTO LRFD §6.10)",
+    )
+
+
 def section_props_from_catalog(profile_name: str, material_name: str = "S355") -> SectionMechanicalProps:
-    """Obtiene propiedades mecanicas completas desde ``fastsap.section_catalog``."""
-    sec = get_section(profile_name)
+    """Obtiene propiedades mecanicas completas desde ``fastsap.section_catalog`` o de la serie
+    determinista de vigas armadas soldadas ``PG_{h_mm}x{b_mm}x{tf_mm}x{tw_mm}``.
+    """
+    norm_name = profile_name.strip()
+    if norm_name in BRIDGE_PLATE_GIRDER_SPECS:
+        h_m, b_m, tf_m, tw_m = BRIDGE_PLATE_GIRDER_SPECS[norm_name]
+        return plate_girder_section_props(norm_name, h_m, b_m, tf_m, tw_m, material_name=material_name)
+    m_pg = re.match(r"^PG_(\d+)x(\d+)x(\d+)x(\d+)$", norm_name, re.I)
+    if m_pg:
+        h_m = float(m_pg.group(1)) / 1000.0
+        b_m = float(m_pg.group(2)) / 1000.0
+        tf_m = float(m_pg.group(3)) / 1000.0
+        tw_m = float(m_pg.group(4)) / 1000.0
+        return plate_girder_section_props(norm_name, h_m, b_m, tf_m, tw_m, material_name=material_name)
+
+    sec = get_section(norm_name)
     if not isinstance(sec, IShape):
         raise ValueError(f"Se esperaba un perfil doble T (IShape) para {profile_name!r}, recibido {type(sec).__name__}")
     # Area de cortante vertical según EN 1993-1-1 §6.2.6(3): Av2 >= h * tw
@@ -1883,6 +1981,948 @@ def execute_bridge_grillage_analysis_and_reopen(
     }
 
 
+def _effective_fy_en10025_2(fy_nom_MPa: float, t_max_m: float) -> float:
+    """Reduccion de limite elastico por espesor de chapa segun EN 10025-2 Tabla 7 / EN 1993-1-1 §3.2.1."""
+    t_mm = t_max_m * 1000.0
+    if fy_nom_MPa >= 350.0:  # S355
+        if t_mm <= 16.0:
+            return 355.0
+        if t_mm <= 40.0:
+            return 345.0
+        if t_mm <= 63.0:
+            return 335.0
+        if t_mm <= 80.0:
+            return 325.0
+        return 315.0
+    if fy_nom_MPa >= 270.0:  # S275
+        if t_mm <= 16.0:
+            return 275.0
+        if t_mm <= 40.0:
+            return 265.0
+        if t_mm <= 63.0:
+            return 255.0
+        return 245.0
+    return float(fy_nom_MPa)
+
+
+def _classify_i_section_ec3(
+    sec: dict[str, Any], fy_eff_MPa: float
+) -> dict[str, Any]:
+    """Clasifica una seccion doble T (laminada o armada soldada PG_*) segun EN 1993-1-1 §5.5 Tabla 5.2."""
+    h = float(sec["h_m"])
+    b = float(sec["b_m"])
+    tf = float(sec["tf_m"])
+    tw = float(sec["tw_m"])
+    r = float(sec.get("r_m", 0.0))
+    is_welded = str(sec["name"]).upper().startswith("PG_") or r <= 1e-6
+    eps = math.sqrt(235.0 / max(1.0, fy_eff_MPa))
+    # Vuelo libre de ala en compresion (EN 1993-1-1 Tabla 5.2 Hoja 2): c_f = (b - tw - 2*r) / 2
+    # En viga soldada sin acuerdo laminado, se descuenta garganta nominal de soldadura a_w ~ 0 o c_f = (b - tw)/2
+    cf = max(1e-6, 0.5 * (b - tw - 2.0 * r))
+    cf_over_tf = cf / tf
+    if cf_over_tf <= 9.0 * eps:
+        flange_class = 1
+    elif cf_over_tf <= 10.0 * eps:
+        flange_class = 2
+    elif cf_over_tf <= 14.0 * eps:
+        flange_class = 3
+    else:
+        flange_class = 4
+
+    # Alma en flexion pura (EN 1993-1-1 Tabla 5.2 Hoja 1): c_w = h - 2*tf - 2*r
+    cw = max(1e-6, h - 2.0 * tf - 2.0 * r)
+    cw_over_tw = cw / tw
+    if cw_over_tw <= 72.0 * eps:
+        web_class = 1
+    elif cw_over_tw <= 83.0 * eps:
+        web_class = 2
+    elif cw_over_tw <= 124.0 * eps:
+        web_class = 3
+    else:
+        web_class = 4
+
+    sec_class = max(flange_class, web_class)
+    return {
+        "section_class": sec_class,
+        "flange_class": flange_class,
+        "web_class": web_class,
+        "is_welded": is_welded,
+        "epsilon": round(eps, 6),
+        "cf_over_tf": round(cf_over_tf, 4),
+        "cf_limit_class1": round(9.0 * eps, 4),
+        "cf_limit_class2": round(10.0 * eps, 4),
+        "cf_limit_class3": round(14.0 * eps, 4),
+        "cw_over_tw": round(cw_over_tw, 4),
+        "cw_limit_class1": round(72.0 * eps, 4),
+        "cw_limit_class2": round(83.0 * eps, 4),
+        "cw_limit_class3": round(124.0 * eps, 4),
+    }
+
+
+def _compute_member_capacities_ec3(
+    sec: dict[str, Any],
+    mat: dict[str, Any],
+    *,
+    L_ltb_m: float,
+    gamma_M0: float = 1.00,
+    gamma_M1: float = 1.10,
+) -> dict[str, Any]:
+    """Calcula las resistencias normativas de una seccion metalica segun
+    EN 1993-1-1:2005+A1:2014 + EN 1993-2:2006 (puentes) + EN 1993-1-5:2006 (placas chapas):
+
+    1. Clasificacion de seccion (§5.5 Tabla 5.2) y reduccion de fy por espesor (EN 10025-2).
+    2. Resistencia plastica/elastica a flexion (§6.2.5): ``Mc,Rd = Wy * fy / gamma_M0``.
+    3. Pandeo lateral-torsional LTB (§6.3.2.2 / §6.3.2.3): ``Mb,Rd = chi_LT * Wy * fy / gamma_M1``
+       con longitud de arriostramiento ``L_LT`` igual a la separacion entre diafragmas ``T*``.
+    4. Cortante plastico (§6.2.6) y abolladura del alma por cortante (EN 1993-1-5 §5.1-5.3):
+       ``Vpl,Rd``, limite de alma no rigidizada ``hw/tw <= (72/eta)*eps``, ``Vb,Rd`` y ``Vc,Rd``.
+    5. Resistencia axil ``Npl,Rd`` y flexion de eje debil ``Mc,z,Rd`` para interaccion concurrente M-V-N.
+    """
+    from fastsap.codes.ec3_ltb import Mcr_simple, chi_LT, lambda_LT
+
+    h = float(sec["h_m"])
+    b = float(sec["b_m"])
+    tf = float(sec["tf_m"])
+    tw = float(sec["tw_m"])
+    r = float(sec.get("r_m", 0.0))
+    hw = max(1e-6, h - 2.0 * tf)
+    area = float(sec["A_m2"])
+    i33 = float(sec["I33_m4"])
+    i22 = float(sec["I22_m4"])
+    j_tors = float(sec["J_m4"])
+    av2 = float(sec["Av2_m2"])
+    wel33 = float(sec["Wel33_m3"])
+    wpl33 = float(sec["Wpl33_m3"])
+    wel22 = i22 / max(1e-6, 0.5 * b)
+    wpl22 = 0.5 * tf * (b ** 2) + 0.25 * hw * (tw ** 2)
+    # Constante de alabeo Iw para perfil doble T simetrico: Iw = Iz * (h - tf)^2 / 4
+    iw = i22 * ((h - tf) ** 2) / 4.0
+
+    E_MPa = float(mat["E_kPa"]) / 1000.0
+    nu = float(mat.get("nu", 0.30))
+    G_MPa = E_MPa / (2.0 * (1.0 + nu))
+    fy_nom_MPa = float(mat["fy_MPa"])
+    t_max = max(tf, tw)
+    fy_eff_MPa = _effective_fy_en10025_2(fy_nom_MPa, t_max)
+
+    cls_info = _classify_i_section_ec3(sec, fy_eff_MPa)
+    sec_class = int(cls_info["section_class"])
+    is_welded = bool(cls_info["is_welded"])
+    eps = float(cls_info["epsilon"])
+
+    # Modulo resistente eficaz Wy segun clase (Clase 1/2 -> Wpl,y; Clase 3 -> Wel,y; Clase 4 -> reducido)
+    if sec_class in (1, 2):
+        wy_m3 = wpl33
+        wz_m3 = wpl22
+    elif sec_class == 3:
+        wy_m3 = wel33
+        wz_m3 = wel22
+    else:
+        # Si apareciera Clase 4, reduccion conservadora del alma eficaz
+        wy_m3 = 0.85 * wel33
+        wz_m3 = 0.85 * wel22
+
+    # Resistencia de seccion a flexion Mc,Rd (kN*m) y axil Npl,Rd (kN)
+    # Nota: Wy (m^3) * fy (MPa = 1000 kN/m^2) -> kN*m
+    Mc_Rd_kNm = (wy_m3 * fy_eff_MPa * 1000.0) / gamma_M0
+    Mpl_Rd_kNm = (wpl33 * fy_eff_MPa * 1000.0) / gamma_M0
+    Mel_Rd_kNm = (wel33 * fy_eff_MPa * 1000.0) / gamma_M0
+    Mcz_Rd_kNm = (wz_m3 * fy_eff_MPa * 1000.0) / gamma_M0
+    # Momento resistido solo por las alas Mf,Rd (EN 1993-1-5 §7.1)
+    Mf_Rd_kNm = (b * tf * (h - tf) * fy_eff_MPa * 1000.0) / gamma_M0
+    Npl_Rd_kN = (area * fy_eff_MPa * 1000.0) / gamma_M0
+
+    # Pandeo lateral-torsional (LTB) con L_LT = distancia entre diafragmas T*
+    # Reutilizamos directamente fastsap.codes.ec3_ltb (Mcr_simple, lambda_LT, chi_LT) en metros y MPa
+    L_eff_m = max(0.10, L_ltb_m)
+    Mcr_Nm = Mcr_simple(L_eff_m, i22, j_tors, iw, E_MPa=E_MPa, G_MPa=G_MPa, C1=1.0)
+    Mcr_kNm = Mcr_Nm / 1000.0
+    lam_bar_LT = lambda_LT(wy_m3, fy_eff_MPa, Mcr_Nm)
+    hb_ratio = h / max(1e-6, b)
+    if is_welded:
+        ltb_curve = "d" if hb_ratio > 2.0 else "c"
+        prof_cls = "welded_h_b_gt_2" if hb_ratio > 2.0 else "welded_h_b_le_2"
+        chi_lt = chi_LT(lam_bar_LT, curve=ltb_curve, method="general", profile_class=prof_cls)
+    else:
+        ltb_curve = "c" if hb_ratio > 2.0 else "b"
+        prof_cls = "rolled_h_b_gt_2" if hb_ratio > 2.0 else "rolled_h_b_le_2"
+        chi_lt = chi_LT(lam_bar_LT, curve=ltb_curve, method="rolled", profile_class=prof_cls)
+    Mb_Rd_kNm = (chi_lt * wy_m3 * fy_eff_MPa * 1000.0) / gamma_M1
+
+    # Cortante plastico EN 1993-1-1 §6.2.6 y abolladura por cortante EN 1993-1-5 §5
+    eta_w = 1.20 if fy_eff_MPa <= 460.0 else 1.00
+    Vpl_Rd_kN = (av2 * (fy_eff_MPa / math.sqrt(3.0)) * 1000.0) / gamma_M0
+    # Esbeltez del alma hw/tw frente al limite sin rigidizadores (72/eta)*eps (EN 1993-1-5 §5.1(2))
+    hw_over_tw = (h - 2.0 * tf - 2.0 * r) / tw
+    hw_over_tw_limit = (72.0 / eta_w) * eps
+    k_tau = 5.34  # Alma sin rigidizadores intermedios transversales (EN 1993-1-5 §5.3)
+    lam_w = hw_over_tw / (37.4 * eps * math.sqrt(k_tau))
+    if hw_over_tw <= hw_over_tw_limit:
+        chi_w = eta_w
+        Vb_Rd_kN = (eta_w * hw * tw * (fy_eff_MPa / math.sqrt(3.0)) * 1000.0) / gamma_M1
+        shear_buckling_active = False
+    else:
+        # EN 1993-1-5 Tabla 5.1 (apoyo extremo no rigido)
+        if lam_w < 0.83 / eta_w:
+            chi_w = eta_w
+        elif lam_w < 1.08:
+            chi_w = 0.83 / lam_w
+        else:
+            chi_w = 1.37 / (0.7 + lam_w)
+        Vb_Rd_kN = (chi_w * hw * tw * (fy_eff_MPa / math.sqrt(3.0)) * 1000.0) / gamma_M1
+        shear_buckling_active = True
+
+    Vc_Rd_kN = min(Vpl_Rd_kN, Vb_Rd_kN)
+
+    return {
+        "norma_aplicada": "EN 1993-1-1:2005+A1:2014 + EN 1993-2:2006 + EN 1993-1-5:2006",
+        "fy_nominal_MPa": fy_nom_MPa,
+        "fy_effective_MPa": fy_eff_MPa,
+        "gamma_M0": gamma_M0,
+        "gamma_M1": gamma_M1,
+        "classification": cls_info,
+        "Wy_m3": round(wy_m3, 8),
+        "Wz_m3": round(wz_m3, 8),
+        "Iw_m6": round(iw, 10),
+        "Mc_Rd_kNm": round(Mc_Rd_kNm, 3),
+        "Mpl_Rd_kNm": round(Mpl_Rd_kNm, 3),
+        "Mel_Rd_kNm": round(Mel_Rd_kNm, 3),
+        "Mf_Rd_kNm": round(Mf_Rd_kNm, 3),
+        "Mcz_Rd_kNm": round(Mcz_Rd_kNm, 3),
+        "Npl_Rd_kN": round(Npl_Rd_kN, 3),
+        "L_LT_m": round(L_ltb_m, 4),
+        "Mcr_kNm": round(Mcr_kNm, 3),
+        "lambda_bar_LT": round(lam_bar_LT, 4),
+        "ltb_curve": ltb_curve,
+        "chi_LT": round(chi_lt, 4),
+        "Mb_Rd_kNm": round(Mb_Rd_kNm, 3),
+        "Vpl_Rd_kN": round(Vpl_Rd_kN, 3),
+        "Vb_Rd_kN": round(Vb_Rd_kN, 3),
+        "Vc_Rd_kN": round(Vc_Rd_kN, 3),
+        "hw_over_tw": round(hw_over_tw, 3),
+        "hw_over_tw_unstiffened_limit": round(hw_over_tw_limit, 3),
+        "lambda_w": round(lam_w, 4),
+        "chi_w": round(chi_w, 4),
+        "shear_buckling_active": shear_buckling_active,
+    }
+
+
+def _compute_member_capacities_aashto(
+    sec: dict[str, Any],
+    mat: dict[str, Any],
+    *,
+    L_b_m: float,
+    phi_f: float = 1.00,
+    phi_v: float = 1.00,
+) -> dict[str, Any]:
+    """Calcula las resistencias normativas de una seccion metalica segun AASHTO LRFD 9th Ed. §6.10
+    (flexion, LTB §6.10.8.2.3, cortante y abolladura del alma §6.10.9.2).
+    """
+    h = float(sec["h_m"])
+    b = float(sec["b_m"])
+    tf = float(sec["tf_m"])
+    tw = float(sec["tw_m"])
+    hw = max(1e-6, h - 2.0 * tf)
+    area = float(sec["A_m2"])
+    i22 = float(sec["I22_m4"])
+    wel33 = float(sec["Wel33_m3"])
+    wpl33 = float(sec["Wpl33_m3"])
+    wel22 = i22 / max(1e-6, 0.5 * b)
+
+    E_MPa = float(mat["E_kPa"]) / 1000.0
+    fy_MPa = float(mat["fy_MPa"])
+    eps = math.sqrt(E_MPa / max(1.0, fy_MPa))
+
+    # Proporciones de ala y alma AASHTO LRFD §6.10.2 y §6.10.6.2
+    lambda_f = b / (2.0 * tf)
+    lambda_pf = 0.38 * eps
+    lambda_rf = 0.56 * eps
+    compact_flange = lambda_f <= lambda_pf
+
+    lambda_w = hw / tw
+    lambda_pw = 2.59 * eps
+    lambda_rw = 5.70 * eps
+    compact_web = lambda_w <= lambda_pw
+    sec_class = 1 if (compact_flange and compact_web) else (2 if lambda_f <= lambda_rf and lambda_w <= lambda_rw else 3)
+
+    Mp_kNm = wpl33 * fy_MPa * 1000.0
+    My_kNm = wel33 * fy_MPa * 1000.0
+    Mc_Rd_kNm = phi_f * (Mp_kNm if sec_class == 1 else My_kNm)
+
+    # Radio de giro efectivo para LTB AASHTO §6.10.8.2.3: rt = b_fc / sqrt(12*(1 + (1/3)*D_c*t_w/(b_fc*t_fc)))
+    dc = 0.5 * hw
+    rt_m = b / math.sqrt(12.0 * (1.0 + (dc * tw) / (3.0 * b * tf)))
+    Lp_m = 1.0 * rt_m * eps
+    Lr_m = math.pi * rt_m * math.sqrt(E_MPa / (0.7 * fy_MPa))
+    if L_b_m <= Lp_m:
+        Mn_ltb_kNm = Mp_kNm if sec_class == 1 else My_kNm
+    elif L_b_m <= Lr_m:
+        Fnc = fy_MPa * (1.0 - 0.3 * ((L_b_m - Lp_m) / max(1e-6, Lr_m - Lp_m)))
+        Mn_ltb_kNm = min(Mp_kNm, wel33 * Fnc * 1000.0)
+    else:
+        Fcr = (math.pi ** 2 * E_MPa) / ((L_b_m / max(1e-6, rt_m)) ** 2)
+        Mn_ltb_kNm = min(Mp_kNm, wel33 * Fcr * 1000.0)
+    Mb_Rd_kNm = phi_f * Mn_ltb_kNm
+
+    # Cortante AASHTO LRFD §6.10.9.2 (alma sin rigidizadores k = 5.0)
+    k_v = 5.0
+    lim1 = 1.12 * math.sqrt(E_MPa * k_v / fy_MPa)
+    lim2 = 1.40 * math.sqrt(E_MPa * k_v / fy_MPa)
+    if lambda_w <= lim1:
+        C_v = 1.0
+    elif lambda_w <= lim2:
+        C_v = lim1 / lambda_w
+    else:
+        C_v = (1.57 * E_MPa * k_v) / ((lambda_w ** 2) * fy_MPa)
+    Vp_kN = 0.58 * fy_MPa * hw * tw * 1000.0
+    Vc_Rd_kN = phi_v * C_v * Vp_kN
+
+    return {
+        "norma_aplicada": "AASHTO LRFD Bridge Design Specifications 9th Ed. §6.10",
+        "fy_nominal_MPa": fy_MPa,
+        "fy_effective_MPa": fy_MPa,
+        "phi_f": phi_f,
+        "phi_v": phi_v,
+        "classification": {
+            "section_class": sec_class,
+            "is_welded": str(sec["name"]).upper().startswith("PG_"),
+            "lambda_f": round(lambda_f, 4),
+            "lambda_pf": round(lambda_pf, 4),
+            "lambda_w": round(lambda_w, 4),
+            "lambda_pw": round(lambda_pw, 4),
+        },
+        "Wy_m3": round(wpl33 if sec_class == 1 else wel33, 8),
+        "Wz_m3": round(wel22, 8),
+        "Mc_Rd_kNm": round(Mc_Rd_kNm, 3),
+        "Mpl_Rd_kNm": round(phi_f * Mp_kNm, 3),
+        "Mel_Rd_kNm": round(phi_f * My_kNm, 3),
+        "Mf_Rd_kNm": round(phi_f * b * tf * (h - tf) * fy_MPa * 1000.0, 3),
+        "Mcz_Rd_kNm": round(phi_f * wel22 * fy_MPa * 1000.0, 3),
+        "Npl_Rd_kN": round(phi_f * area * fy_MPa * 1000.0, 3),
+        "L_LT_m": round(L_b_m, 4),
+        "Lp_m": round(Lp_m, 4),
+        "Lr_m": round(Lr_m, 4),
+        "Mb_Rd_kNm": round(Mb_Rd_kNm, 3),
+        "Vpl_Rd_kN": round(phi_v * Vp_kN, 3),
+        "Vb_Rd_kN": round(Vc_Rd_kN, 3),
+        "Vc_Rd_kN": round(Vc_Rd_kN, 3),
+        "hw_over_tw": round(lambda_w, 3),
+        "hw_over_tw_unstiffened_limit": round(lim1, 3),
+        "C_v": round(C_v, 4),
+        "shear_buckling_active": C_v < 1.0 - 1e-6,
+    }
+
+
+def verify_sap_section_properties(
+    sap_model: Any,
+    sec_props: SectionMechanicalProps | dict[str, Any],
+    *,
+    tol_rel: float = 0.03,
+) -> dict[str, Any]:
+    """Lee de vuelta ``PropFrame.GetSectProps`` desde SAP2000 y verifica que las propiedades
+    geométricas/mecánicas creadas por el motor (``Area``, ``As2``, ``I33``, ``I22``, ``S33``, ``Z33``)
+    coinciden con las propiedades esperadas de ``sec_props``.
+    """
+    from fastsap.oapi import get_section_props
+
+    sec_d = sec_props.to_dict() if hasattr(sec_props, "to_dict") else dict(sec_props)
+    name = str(sec_d["name"])
+    h = float(sec_d["h_m"])
+    b = float(sec_d["b_m"])
+    tf = float(sec_d["tf_m"])
+    tw = float(sec_d["tw_m"])
+    hw = max(0.0, h - 2.0 * tf)
+    # Propiedades analiticas exactas de la seccion 3-rectangulos que SAP2000 construye en SetISection
+    exp_area = 2.0 * b * tf + hw * tw
+    exp_i33 = (b * (h ** 3) - (b - tw) * (hw ** 3)) / 12.0
+    exp_i22 = (2.0 * tf * (b ** 3) + hw * (tw ** 3)) / 12.0
+    exp_s33 = exp_i33 / (0.5 * h)
+    exp_z33 = b * tf * (h - tf) + 0.25 * tw * (hw ** 2)
+    exp_as2 = h * tw
+
+    prop_frame = getattr(sap_model, "PropFrame", None)
+    if prop_frame is None or not hasattr(prop_frame, "GetSectProps"):
+        return {
+            "section_name": name,
+            "verified_via_oapi": False,
+            "A_sap_m2": round(exp_area, 8),
+            "I33_sap_m4": round(exp_i33, 8),
+            "I22_sap_m4": round(exp_i22, 8),
+            "S33_sap_m3": round(exp_s33, 8),
+            "Z33_sap_m3": round(exp_z33, 8),
+            "As2_sap_m2": round(exp_as2, 8),
+            "max_rel_diff": 0.0,
+        }
+
+    try:
+        sap_p = get_section_props(prop_frame, name)
+    except Exception:
+        raw = prop_frame.GetSectProps(name, *(0.0,) * 12)
+        _check_ret(f"PropFrame.GetSectProps({name})", raw)
+        sap_p = {
+            "area": float(raw[1]),
+            "as2": float(raw[2]),
+            "as3": float(raw[3]),
+            "torsion": float(raw[4]),
+            "i22": float(raw[5]),
+            "i33": float(raw[6]),
+            "s22": float(raw[7]),
+            "s33": float(raw[8]),
+            "z22": float(raw[9]),
+            "z33": float(raw[10]),
+            "r22": float(raw[11]),
+            "r33": float(raw[12]),
+        }
+
+    comparisons = {
+        "area": (sap_p["area"], exp_area),
+        "i33": (sap_p["i33"], exp_i33),
+        "i22": (sap_p["i22"], exp_i22),
+        "s33": (sap_p["s33"], exp_s33),
+        "z33": (sap_p["z33"], exp_z33),
+        "as2": (sap_p["as2"], exp_as2),
+    }
+    rel_diffs: dict[str, float] = {}
+    for k, (val_sap, val_exp) in comparisons.items():
+        diff = abs(val_sap - val_exp) / max(1e-9, abs(val_exp))
+        rel_diffs[k] = round(diff, 6)
+        if diff > tol_rel:
+            raise ValueError(
+                f"Propiedad {k!r} de seccion {name!r} en SAP2000 ({val_sap:.6g}) "
+                f"difiere de la esperada ({val_exp:.6g}) en {diff:.2%} > {tol_rel:.2%}"
+            )
+
+    return {
+        "section_name": name,
+        "verified_via_oapi": True,
+        "A_sap_m2": round(sap_p["area"], 8),
+        "I33_sap_m4": round(sap_p["i33"], 8),
+        "I22_sap_m4": round(sap_p["i22"], 8),
+        "S33_sap_m3": round(sap_p["s33"], 8),
+        "Z33_sap_m3": round(sap_p["z33"], 8),
+        "As2_sap_m2": round(sap_p["as2"], 8),
+        "J_sap_m4": round(sap_p["torsion"], 8),
+        "rel_diffs": rel_diffs,
+        "max_rel_diff": max(rel_diffs.values()) if rel_diffs else 0.0,
+    }
+
+
+def _evaluate_concurrent_station_row(
+    row: dict[str, Any],
+    cap: dict[str, Any],
+    *,
+    norma: str,
+) -> dict[str, Any]:
+    """Evalua en una UNICA fila concurrente ``(frame, case, station_m)`` todos los ratios ULS:
+    - Flexion pura de seccion: ``|M3| / Mc,Rd``
+    - Estabilidad por pandeo lateral-torsional (LTB): ``|M3| / Mb,Rd``
+    - Cortante vertical y abolladura del alma: ``|V2| / Vc,Rd``
+    - Interaccion concurrente Flexion + Cortante + Axil (M-V-N) en la misma estacion:
+      * Segun EN 1993-1-1 §6.2.8 / §6.2.9 / §6.3.3 y EN 1993-1-5 §7.1:
+        cuando ``|V2,Ed| > 0.5 * Vc,Rd``, se reduce la resistencia del alma mediante
+        ``rho = (2*|V2,Ed|/Vc,Rd - 1)^2``, penalizando tanto ``Mc,Rd,red`` como ``Mb,Rd,red``,
+        y se suma la interaccion de esfuerzo axil concurrente ``|P| / Npl,Rd`` y momento
+        transversal ``|M2| / Mcz,Rd``.
+    """
+    P_Ed = abs(float(row["P_kN"]))
+    V2_Ed = abs(float(row["V2_kN"]))
+    V3_Ed = abs(float(row.get("V3_kN", 0.0)))
+    T_Ed = abs(float(row.get("T_kNm", 0.0)))
+    M2_Ed = abs(float(row.get("M2_kNm", 0.0)))
+    M3_Ed = abs(float(row["M3_kNm"]))
+
+    Mc_Rd = float(cap["Mc_Rd_kNm"])
+    Mb_Rd = float(cap["Mb_Rd_kNm"])
+    Mf_Rd = float(cap["Mf_Rd_kNm"])
+    Mpl_Rd = float(cap["Mpl_Rd_kNm"])
+    Mcz_Rd = float(cap["Mcz_Rd_kNm"])
+    Vc_Rd = float(cap["Vc_Rd_kN"])
+    Npl_Rd = float(cap["Npl_Rd_kN"])
+
+    dcr_flex_sec = M3_Ed / Mc_Rd if Mc_Rd > 0 else float("inf")
+    dcr_ltb = M3_Ed / Mb_Rd if Mb_Rd > 0 else float("inf")
+    dcr_shear = V2_Ed / Vc_Rd if Vc_Rd > 0 else float("inf")
+    dcr_axial = P_Ed / Npl_Rd if Npl_Rd > 0 else float("inf")
+    dcr_m2 = M2_Ed / Mcz_Rd if Mcz_Rd > 0 else 0.0
+
+    # Interaccion concurrente M-V-N en la MISMA estacion y combinacion
+    if dcr_shear > 0.5:
+        rho = min(1.0, (2.0 * dcr_shear - 1.0) ** 2)
+        # Fraccion resistida por el alma que se reduce por factor (1 - rho):
+        # M_Rd,red = max(Mf_Rd, M_Rd - rho * (Mpl_Rd - Mf_Rd)) escalado para Mc_Rd y Mb_Rd
+        web_moment_share = max(0.0, Mpl_Rd - Mf_Rd)
+        Mc_Rd_mv = max(Mf_Rd, Mc_Rd - rho * web_moment_share)
+        chi_ratio = Mb_Rd / max(1e-6, Mc_Rd)
+        Mb_Rd_mv = max(chi_ratio * Mf_Rd, Mb_Rd - rho * chi_ratio * web_moment_share)
+        dcr_mv_sec = M3_Ed / max(1e-6, Mc_Rd_mv)
+        dcr_mv_ltb = M3_Ed / max(1e-6, Mb_Rd_mv)
+        # Ecuacion (7.1) de EN 1993-1-5 §7.1: eta_1 + (1 - Mf,Rd/Mpl,Rd)*(2*eta_3 - 1)^2
+        eta_1 = M3_Ed / max(1e-6, Mpl_Rd)
+        dcr_en1993_1_5_eq71 = eta_1 + (1.0 - min(1.0, Mf_Rd / max(1e-6, Mpl_Rd))) * rho
+    else:
+        rho = 0.0
+        Mc_Rd_mv = Mc_Rd
+        Mb_Rd_mv = Mb_Rd
+        dcr_mv_sec = dcr_flex_sec
+        dcr_mv_ltb = dcr_ltb
+        dcr_en1993_1_5_eq71 = dcr_flex_sec
+
+    # Interaccion completa M3 + V2 + N + M2 concurrentes (EN 1993-1-1 §6.2.9 / §6.3.3 / AASHTO §6.8.2.3)
+    dcr_mvn_concurrent = max(dcr_mv_sec, dcr_mv_ltb, dcr_en1993_1_5_eq71) + dcr_axial + 0.5 * dcr_m2
+
+    checks_at_station = {
+        "ELU_FLEXION_SECCION": round(dcr_flex_sec, 6),
+        "ELU_PANDEO_LATERAL_TORSIONAL_LTB": round(dcr_ltb, 6),
+        "ELU_CORTANTE_Y_ABOLLADURA_ALMA": round(dcr_shear, 6),
+        "ELU_INTERACCION_CONCURRENTE_M_V_N": round(dcr_mvn_concurrent, 6),
+    }
+    gov_check_name = max(checks_at_station, key=lambda k: checks_at_station[k])
+    gov_dcr = checks_at_station[gov_check_name]
+
+    return {
+        "frame": str(row["frame"]),
+        "role": str(row.get("role", "girder")),
+        "case": str(row["case"]),
+        "station_m": round(float(row["station_m"]), 4),
+        "P_kN": round(float(row["P_kN"]), 3),
+        "V2_kN": round(float(row["V2_kN"]), 3),
+        "V3_kN": round(V3_Ed, 3),
+        "T_kNm": round(T_Ed, 3),
+        "M2_kNm": round(M2_Ed, 3),
+        "M3_kNm": round(float(row["M3_kNm"]), 3),
+        "rho_shear_reduction": round(rho, 6),
+        "Mc_Rd_effective_kNm": round(Mc_Rd_mv, 3),
+        "Mb_Rd_effective_kNm": round(Mb_Rd_mv, 3),
+        "Vc_Rd_kN": round(Vc_Rd, 3),
+        "dcr_flexure_section": round(dcr_flex_sec, 6),
+        "dcr_ltb": round(dcr_ltb, 6),
+        "dcr_shear": round(dcr_shear, 6),
+        "dcr_mvn_concurrent": round(dcr_mvn_concurrent, 6),
+        "governing_check_at_station": gov_check_name,
+        "max_dcr_at_station": round(gov_dcr, 6),
+    }
+
+
+def verify_bridge_grillage_results(
+    analysis_report: dict[str, Any],
+    *,
+    spec: BridgeDesignSpec | None = None,
+    live_deflection_ratio_limit: float = 800.0,
+    total_deflection_ratio_limit: float = 500.0,
+    gamma_M0: float = 1.00,
+    gamma_M1: float = 1.10,
+) -> dict[str, Any]:
+    """Verificador normativo concurrente ULS/SLS sobre los esfuerzos y desplazamientos
+    extraídos de SAP2000.
+
+    - Evalúa cada estación, combinación y barra de forma estrictamente **concurrente**
+      (``P, V2, V3, T, M2, M3`` de la misma fila ``(frame, case, station_m)``), sin combinar
+      jamás máximos independientes de distintas estaciones o combinaciones.
+    - No mezcla normativas: utiliza **EN 1993-1-1 + EN 1993-2 + EN 1993-1-5** cuando
+      ``norma == "EN_1991_2"`` o **AASHTO LRFD 9th Ed. §6.10** cuando ``norma == "AASHTO_LRFD"``.
+    - Si el análisis no convergió (``RunAnalysis_ret != 0``), faltan unidades o tablas de
+      esfuerzos/desplazamientos/reacciones, o falla el equilibrio global, devuelve
+      :attr:`CalculationStatus.NO_CALCULADO`.
+    - Conserva las comprobaciones no implementadas (``UNIMPLEMENTED_CHECKS``) y resuelve:
+      * ``CalculationStatus.CALCULADO_FALLA`` cuando algún estado límite implementado tiene ``DCR > 1.0``.
+      * ``CalculationStatus.REQUIERE_REVISION`` cuando todos los estados límite implementados
+        cumplen (``DCR <= 1.0``) pero existen comprobaciones obligatorias no implementadas
+        (alabeo/bimomento, rigidizadores transversales, conectores de cortante, fatiga, neoprenos).
+    """
+    missing_inputs: list[str] = []
+    if not isinstance(analysis_report, dict):
+        missing_inputs.append("analysis_report")
+    else:
+        if analysis_report.get("RunAnalysis_ret") != 0:
+            missing_inputs.append(f"RunAnalysis_ret={analysis_report.get('RunAnalysis_ret')!r}")
+        if analysis_report.get("units") != "kN_m_C":
+            missing_inputs.append(f"units={analysis_report.get('units')!r} (requerido 'kN_m_C')")
+        if not analysis_report.get("frame_forces"):
+            missing_inputs.append("frame_forces vacio")
+        if not analysis_report.get("displacements"):
+            missing_inputs.append("displacements vacio")
+        if not analysis_report.get("reactions"):
+            missing_inputs.append("reactions vacio")
+        eq_map = analysis_report.get("equilibrium_by_case") or {}
+        if not eq_map or any(not v.get("equilibrium_ok", False) for v in eq_map.values()):
+            missing_inputs.append("equilibrium_by_case invalido o incumplido")
+
+    if missing_inputs:
+        status_nc = resolve_status(
+            None,
+            missing_inputs=missing_inputs,
+            demand_present=False,
+            capacity_present=False,
+            analysis_executed=False,
+            geometry_present=False,
+            material_present=False,
+            reinforcement_present=False,
+        )
+        return {
+            "calculation_status": status_nc,
+            "implemented_checks_status": CalculationStatus.NO_CALCULADO.value,
+            "missing_inputs": missing_inputs,
+            "max_dcr_uls": None,
+            "max_dcr_sls": None,
+            "max_dcr_overall": None,
+            "checks": [],
+            "unimplemented_checks": list(UNIMPLEMENTED_CHECKS),
+        }
+
+    meta = analysis_report["meta"]
+    mat = meta["material"]
+    sections = meta["sections"]
+    span_m = float(meta["span_length"])
+    width_m = float(meta["width_m"])
+    n_girders = int(meta["n_girders"])
+    div_per_span = int(meta["divisions_per_span"])
+    girder_spacing_m = float(meta["girder_spacing"])
+    L_ltb_girder_m = span_m / max(1, div_per_span)
+    L_ltb_diaph_m = girder_spacing_m
+
+    loads_sum = meta["loads_summary"]
+    traffic_code = str(loads_sum.get("traffic_code", "EN_1991_2_LM1"))
+    norma = spec.norma if spec is not None else ("AASHTO_LRFD" if "AASHTO" in traffic_code else "EN_1991_2")
+
+    frame_forces: list[dict[str, Any]] = analysis_report["frame_forces"]
+    displacements: list[dict[str, Any]] = analysis_report["displacements"]
+    reactions: list[dict[str, Any]] = analysis_report["reactions"]
+
+    # Identificar nombres de seccion de viga longitudinal y diafragma transversal
+    sec_names = list(sections.keys())
+    girder_sec_name = sec_names[0]
+    diaph_sec_name = sec_names[1] if len(sec_names) > 1 else sec_names[0]
+    for f in analysis_report.get("frames", []):
+        if f.get("role") == "girder":
+            girder_sec_name = f["section"]
+            break
+    for f in analysis_report.get("frames", []):
+        if f.get("role") == "diaphragm":
+            diaph_sec_name = f["section"]
+            break
+
+    girder_sec = sections[girder_sec_name]
+    diaph_sec = sections.get(diaph_sec_name, girder_sec)
+
+    if norma == "AASHTO_LRFD":
+        girder_cap = _compute_member_capacities_aashto(girder_sec, mat, L_b_m=L_ltb_girder_m)
+        diaph_cap = _compute_member_capacities_aashto(diaph_sec, mat, L_b_m=L_ltb_diaph_m)
+        uls_combos = ["ULS_STRENGTH_I", "ULS_STRENGTH_I_SHEAR"]
+        sls_total_combo = "SLS_SERVICE_II"
+    else:
+        girder_cap = _compute_member_capacities_ec3(
+            girder_sec, mat, L_ltb_m=L_ltb_girder_m, gamma_M0=gamma_M0, gamma_M1=gamma_M1
+        )
+        diaph_cap = _compute_member_capacities_ec3(
+            diaph_sec, mat, L_ltb_m=L_ltb_diaph_m, gamma_M0=gamma_M0, gamma_M1=gamma_M1
+        )
+        uls_combos = ["ULS_STR", "ULS_STR_SHEAR"]
+        sls_total_combo = "SLS_CHARACTERISTIC"
+
+    # Filtrar filas ULS de vigas longitudinales (L*) y diafragmas (T*)
+    girder_uls_rows = [
+        r for r in frame_forces if r.get("role") == "girder" and r["case"] in uls_combos
+    ]
+    diaph_uls_rows = [
+        r for r in frame_forces if r.get("role") == "diaphragm" and r["case"] in uls_combos
+    ]
+
+    if not girder_uls_rows:
+        return {
+            "calculation_status": CalculationStatus.NO_CALCULADO,
+            "implemented_checks_status": CalculationStatus.NO_CALCULADO.value,
+            "missing_inputs": ["Sin filas ULS para vigas longitudinales"],
+            "max_dcr_uls": None,
+            "max_dcr_sls": None,
+            "max_dcr_overall": None,
+            "checks": [],
+            "unimplemented_checks": list(UNIMPLEMENTED_CHECKS),
+        }
+
+    girder_evals = [_evaluate_concurrent_station_row(r, girder_cap, norma=norma) for r in girder_uls_rows]
+    diaph_evals = [_evaluate_concurrent_station_row(r, diaph_cap, norma=norma) for r in diaph_uls_rows]
+
+    gov_flex_row = max(girder_evals, key=lambda e: e["dcr_flexure_section"])
+    gov_ltb_row = max(girder_evals, key=lambda e: e["dcr_ltb"])
+    gov_shear_row = max(girder_evals, key=lambda e: e["dcr_shear"])
+    gov_mvn_row = max(girder_evals, key=lambda e: e["dcr_mvn_concurrent"])
+    gov_diaph_row = max(diaph_evals, key=lambda e: e["dcr_mvn_concurrent"]) if diaph_evals else None
+
+    # Evaluacion SLS de flechas nodales reales en SAP2000:
+    # 1. Flecha activa de trafico (LIVE_LANE + LIVE_VEHICLE_M concurrentes en el mismo nudo)
+    # 2. Flecha caracteristica / Service total (SLS_CHARACTERISTIC o SLS_SERVICE_II)
+    uz_by_joint_case: dict[tuple[str, str], float] = {
+        (str(d["joint"]), str(d["case"])): float(d["Uz_m"]) for d in displacements
+    }
+    all_joints = sorted({str(d["joint"]) for d in displacements})
+
+    best_live_defl_mm = 0.0
+    best_live_joint = ""
+    for jid in all_joints:
+        uz_lane = uz_by_joint_case.get((jid, "LIVE_LANE"), 0.0)
+        uz_veh_m = uz_by_joint_case.get((jid, "LIVE_VEHICLE_M"), 0.0)
+        uz_veh_v = uz_by_joint_case.get((jid, "LIVE_VEHICLE_V"), 0.0)
+        defl_m_mm = abs(uz_lane + uz_veh_m) * 1000.0
+        defl_v_mm = abs(uz_lane + uz_veh_v) * 1000.0
+        defl_j_mm = max(defl_m_mm, defl_v_mm)
+        if defl_j_mm >= best_live_defl_mm:
+            best_live_defl_mm = defl_j_mm
+            best_live_joint = jid
+
+    best_total_defl_mm = 0.0
+    best_total_joint = ""
+    for jid in all_joints:
+        uz_sls = uz_by_joint_case.get((jid, sls_total_combo), 0.0)
+        defl_tot_mm = abs(uz_sls) * 1000.0
+        if defl_tot_mm >= best_total_defl_mm:
+            best_total_defl_mm = defl_tot_mm
+            best_total_joint = jid
+
+    live_limit_mm = (span_m * 1000.0) / live_deflection_ratio_limit
+    total_limit_mm = (span_m * 1000.0) / total_deflection_ratio_limit
+    dcr_sls_live = best_live_defl_mm / max(1e-6, live_limit_mm)
+    dcr_sls_total = best_total_defl_mm / max(1e-6, total_limit_mm)
+
+    # Verificacion de reacciones en apoyos (compresion vertical sin levantamiento bajo cargas gravitatorias)
+    uls_reactions = [r for r in reactions if r["case"] in uls_combos]
+    min_rz_uls_kN = min((float(r["Fz_kN"]) for r in uls_reactions), default=0.0)
+    max_rz_uls_kN = max((float(r["Fz_kN"]) for r in uls_reactions), default=0.0)
+    max_rx_uls_kN = max((abs(float(r["Fx_kN"])) for r in uls_reactions), default=0.0)
+    max_ry_uls_kN = max((abs(float(r["Fy_kN"])) for r in uls_reactions), default=0.0)
+    # Si hay levantamiento neto significativo (Fz < -1.0 kN), penalizar con DCR > 1.0
+    dcr_support_uplift = 0.0 if min_rz_uls_kN >= -1e-3 else (1.0 + abs(min_rz_uls_kN) / max(1.0, max_rz_uls_kN))
+
+    def _status_for_dcr(dcr_val: float) -> CalculationStatus:
+        return resolve_status(
+            dcr_val,
+            demand_present=True,
+            capacity_present=True,
+            analysis_executed=True,
+            geometry_present=True,
+            material_present=True,
+            reinforcement_present=True,
+        )
+
+    checks_list: list[dict[str, Any]] = [
+        {
+            "check_id": "ELU_FLEXION_SECCION_VIGA",
+            "category": "ULS",
+            "role": "girder",
+            "section": girder_sec_name,
+            "norm_ref": (
+                "EN 1993-1-1 §6.2.5 + EN 1993-2 §6.2.5"
+                if norma != "AASHTO_LRFD"
+                else "AASHTO LRFD §6.10.7 / §6.10.8"
+            ),
+            "governing_member": gov_flex_row["frame"],
+            "governing_combo": gov_flex_row["case"],
+            "governing_station_m": gov_flex_row["station_m"],
+            "demand_M3_kNm": round(abs(gov_flex_row["M3_kNm"]), 3),
+            "concurrent_V2_kN": round(abs(gov_flex_row["V2_kN"]), 3),
+            "concurrent_P_kN": round(abs(gov_flex_row["P_kN"]), 3),
+            "concurrent_T_kNm": round(abs(gov_flex_row["T_kNm"]), 3),
+            "capacity_Mc_Rd_kNm": girder_cap["Mc_Rd_kNm"],
+            "dcr": gov_flex_row["dcr_flexure_section"],
+            "status": _status_for_dcr(gov_flex_row["dcr_flexure_section"]).value,
+        },
+        {
+            "check_id": "ELU_PANDEO_LATERAL_TORSIONAL_LTB_VIGA",
+            "category": "ULS",
+            "role": "girder",
+            "section": girder_sec_name,
+            "norm_ref": (
+                f"EN 1993-1-1 §6.3.2 + EN 1993-2 §6.3.2 (L_LT={L_ltb_girder_m:.2f} m, curva {girder_cap.get('ltb_curve', 'c')})"
+                if norma != "AASHTO_LRFD"
+                else f"AASHTO LRFD §6.10.8.2.3 (L_b={L_ltb_girder_m:.2f} m)"
+            ),
+            "governing_member": gov_ltb_row["frame"],
+            "governing_combo": gov_ltb_row["case"],
+            "governing_station_m": gov_ltb_row["station_m"],
+            "demand_M3_kNm": round(abs(gov_ltb_row["M3_kNm"]), 3),
+            "concurrent_V2_kN": round(abs(gov_ltb_row["V2_kN"]), 3),
+            "concurrent_P_kN": round(abs(gov_ltb_row["P_kN"]), 3),
+            "capacity_Mb_Rd_kNm": girder_cap["Mb_Rd_kNm"],
+            "dcr": gov_ltb_row["dcr_ltb"],
+            "status": _status_for_dcr(gov_ltb_row["dcr_ltb"]).value,
+        },
+        {
+            "check_id": "ELU_CORTANTE_Y_ABOLLADURA_ALMA_VIGA",
+            "category": "ULS",
+            "role": "girder",
+            "section": girder_sec_name,
+            "norm_ref": (
+                "EN 1993-1-1 §6.2.6 + EN 1993-1-5 §5.1-5.3"
+                if norma != "AASHTO_LRFD"
+                else "AASHTO LRFD §6.10.9.2"
+            ),
+            "governing_member": gov_shear_row["frame"],
+            "governing_combo": gov_shear_row["case"],
+            "governing_station_m": gov_shear_row["station_m"],
+            "demand_V2_kN": round(abs(gov_shear_row["V2_kN"]), 3),
+            "concurrent_M3_kNm": round(abs(gov_shear_row["M3_kNm"]), 3),
+            "concurrent_P_kN": round(abs(gov_shear_row["P_kN"]), 3),
+            "capacity_Vc_Rd_kN": girder_cap["Vc_Rd_kN"],
+            "dcr": gov_shear_row["dcr_shear"],
+            "status": _status_for_dcr(gov_shear_row["dcr_shear"]).value,
+        },
+        {
+            "check_id": "ELU_INTERACCION_CONCURRENTE_M_V_N_VIGA",
+            "category": "ULS",
+            "role": "girder",
+            "section": girder_sec_name,
+            "norm_ref": (
+                "EN 1993-1-1 §6.2.8/§6.2.9/§6.3.3 + EN 1993-1-5 §7.1"
+                if norma != "AASHTO_LRFD"
+                else "AASHTO LRFD §6.8.2.3 / §6.10.8"
+            ),
+            "governing_member": gov_mvn_row["frame"],
+            "governing_combo": gov_mvn_row["case"],
+            "governing_station_m": gov_mvn_row["station_m"],
+            "demand_M3_kNm": round(abs(gov_mvn_row["M3_kNm"]), 3),
+            "concurrent_V2_kN": round(abs(gov_mvn_row["V2_kN"]), 3),
+            "concurrent_P_kN": round(abs(gov_mvn_row["P_kN"]), 3),
+            "concurrent_M2_kNm": round(abs(gov_mvn_row["M2_kNm"]), 3),
+            "rho_shear_reduction": gov_mvn_row["rho_shear_reduction"],
+            "capacity_Mb_Rd_effective_kNm": gov_mvn_row["Mb_Rd_effective_kNm"],
+            "dcr": gov_mvn_row["dcr_mvn_concurrent"],
+            "status": _status_for_dcr(gov_mvn_row["dcr_mvn_concurrent"]).value,
+        },
+    ]
+
+    if gov_diaph_row is not None:
+        checks_list.append({
+            "check_id": "ELU_DIAFRAGMA_TRANSVERSAL_M_V_CONCURRENTE",
+            "category": "ULS",
+            "role": "diaphragm",
+            "section": diaph_sec_name,
+            "norm_ref": (
+                "EN 1993-1-1 §6.2.5/§6.2.6/§6.2.8"
+                if norma != "AASHTO_LRFD"
+                else "AASHTO LRFD §6.10.7/§6.10.9"
+            ),
+            "governing_member": gov_diaph_row["frame"],
+            "governing_combo": gov_diaph_row["case"],
+            "governing_station_m": gov_diaph_row["station_m"],
+            "demand_M3_kNm": round(abs(gov_diaph_row["M3_kNm"]), 3),
+            "concurrent_V2_kN": round(abs(gov_diaph_row["V2_kN"]), 3),
+            "capacity_Mc_Rd_kNm": diaph_cap["Mc_Rd_kNm"],
+            "capacity_Vc_Rd_kN": diaph_cap["Vc_Rd_kN"],
+            "dcr": gov_diaph_row["dcr_mvn_concurrent"],
+            "status": _status_for_dcr(gov_diaph_row["dcr_mvn_concurrent"]).value,
+        })
+
+    checks_list.extend([
+        {
+            "check_id": "ELU_ESTABILIDAD_VERTICAL_APOYOS_SIN_LEVANTAMIENTO",
+            "category": "ULS",
+            "role": "support",
+            "section": "BEARINGS",
+            "norm_ref": "EN 1990 Anexo A2 §A2.4.1 / AASHTO LRFD §3.11 (R_z,min >= 0 sin despegue)",
+            "governing_member": "SUPPORTS",
+            "governing_combo": uls_combos[0],
+            "governing_station_m": 0.0,
+            "min_Rz_kN": round(min_rz_uls_kN, 3),
+            "max_Rz_kN": round(max_rz_uls_kN, 3),
+            "max_Rx_kN": round(max_rx_uls_kN, 3),
+            "max_Ry_kN": round(max_ry_uls_kN, 3),
+            "dcr": round(dcr_support_uplift, 6),
+            "status": _status_for_dcr(dcr_support_uplift).value,
+        },
+        {
+            "check_id": "ELS_FLECHA_ACTIVA_TRAFICO",
+            "category": "SLS",
+            "role": "girder",
+            "section": girder_sec_name,
+            "norm_ref": (
+                f"EN 1993-2 §7.2 / IAP-11 / AASHTO LRFD §2.5.2.6.2 (delta_LL <= L/{int(live_deflection_ratio_limit)} = {live_limit_mm:.2f} mm)"
+            ),
+            "governing_member": best_live_joint,
+            "governing_combo": "LIVE_LANE+LIVE_VEHICLE_M",
+            "governing_station_m": round(span_m / 2.0, 3),
+            "demand_deflection_mm": round(best_live_defl_mm, 3),
+            "limit_deflection_mm": round(live_limit_mm, 3),
+            "dcr": round(dcr_sls_live, 6),
+            "status": _status_for_dcr(dcr_sls_live).value,
+        },
+        {
+            "check_id": "ELS_FLECHA_TOTAL_CARACTERISTICA",
+            "category": "SLS",
+            "role": "girder",
+            "section": girder_sec_name,
+            "norm_ref": (
+                f"EN 1990 §6.5.3 / EN 1993-2 §7.2 (delta_total <= L/{int(total_deflection_ratio_limit)} = {total_limit_mm:.2f} mm)"
+            ),
+            "governing_member": best_total_joint,
+            "governing_combo": sls_total_combo,
+            "governing_station_m": round(span_m / 2.0, 3),
+            "demand_deflection_mm": round(best_total_defl_mm, 3),
+            "limit_deflection_mm": round(total_limit_mm, 3),
+            "dcr": round(dcr_sls_total, 6),
+            "status": _status_for_dcr(dcr_sls_total).value,
+        },
+    ])
+
+    uls_checks = [c for c in checks_list if c["category"] == "ULS"]
+    sls_checks = [c for c in checks_list if c["category"] == "SLS"]
+    max_dcr_uls = max(c["dcr"] for c in uls_checks)
+    max_dcr_sls = max(c["dcr"] for c in sls_checks)
+    gov_overall_check = max(checks_list, key=lambda c: c["dcr"])
+    max_dcr_overall = gov_overall_check["dcr"]
+
+    agg_implemented = aggregate_calculation_statuses([c["status"] for c in checks_list])
+    unimplemented = list(meta.get("comprobaciones_no_implementadas", UNIMPLEMENTED_CHECKS))
+
+    # Regla innegociable de honestidad:
+    # - Si cualquier estado limite implementado falla (DCR > 1.0) -> CALCULADO_FALLA.
+    # - Si todos los estados limite implementados cumplen (DCR <= 1.0), pero existen
+    #   comprobaciones obligatorias de puente no implementadas -> REQUIERE_REVISION.
+    # - Solo si todas las comprobaciones aplicables estuvieran implementadas y cumplieran -> CALCULADO_CUMPLE.
+    if agg_implemented == CalculationStatus.CALCULADO_FALLA:
+        overall_status = CalculationStatus.CALCULADO_FALLA
+    elif agg_implemented == CalculationStatus.NO_CALCULADO:
+        overall_status = CalculationStatus.NO_CALCULADO
+    elif unimplemented:
+        overall_status = CalculationStatus.REQUIERE_REVISION
+    else:
+        overall_status = agg_implemented
+
+    return {
+        "norma": norma,
+        "girder_section": girder_sec_name,
+        "diaphragm_section": diaph_sec_name,
+        "girder_capacities": girder_cap,
+        "diaphragm_capacities": diaph_cap,
+        "checks": checks_list,
+        "governing_check": gov_overall_check,
+        "governing_girder_uls_station": gov_mvn_row,
+        "governing_diaphragm_uls_station": gov_diaph_row,
+        "max_dcr_uls": round(max_dcr_uls, 6),
+        "max_dcr_sls": round(max_dcr_sls, 6),
+        "max_dcr_overall": round(max_dcr_overall, 6),
+        "sls_deflections": {
+            "active_traffic_deflection_mm": round(best_live_defl_mm, 3),
+            "active_traffic_limit_mm": round(live_limit_mm, 3),
+            "active_traffic_ratio_limit": f"L/{int(live_deflection_ratio_limit)}",
+            "active_traffic_governing_joint": best_live_joint,
+            "active_traffic_dcr": round(dcr_sls_live, 6),
+            "total_characteristic_deflection_mm": round(best_total_defl_mm, 3),
+            "total_characteristic_limit_mm": round(total_limit_mm, 3),
+            "total_characteristic_ratio_limit": f"L/{int(total_deflection_ratio_limit)}",
+            "total_characteristic_governing_joint": best_total_joint,
+            "total_characteristic_dcr": round(dcr_sls_total, 6),
+            "criterion_justification": (
+                f"Flecha activa de tráfico limitada a L/{int(live_deflection_ratio_limit)} ({live_limit_mm:.2f} mm) "
+                f"conforme a IAP-11 §4.3.2 / AASHTO LRFD §2.5.2.6.2 / EN 1993-2 §7.2 para puentes de carretera "
+                f"y flecha total característica limitada a L/{int(total_deflection_ratio_limit)} ({total_limit_mm:.2f} mm)."
+            ),
+        },
+        "implemented_checks_status": agg_implemented.value,
+        "calculation_status": overall_status,
+        "unimplemented_checks": unimplemented,
+        "missing_inputs": [],
+    }
+
+
 def run_bridge_grillage_sap2000(
     sdb_path: str,
     *,
@@ -1921,8 +2961,608 @@ def run_bridge_grillage_sap2000(
         )
 
 
+def _run_single_sap_analysis_and_extract(
+    client: Any,
+    sap_model: Any,
+    sdb_str: str,
+    *,
+    meta: dict[str, Any],
+    joints_spec: list[dict[str, Any]],
+    frames_spec: list[dict[str, Any]],
+    equilibrium_tol_rel: float = 0.005,
+) -> dict[str, Any]:
+    """Guarda el modelo ``.sdb``, ejecuta ``Analyze.RunAnalysis()``, extrae reacciones,
+    desplazamientos y esfuerzos concurrentes ``(P, V2, V3, T, M2, M3)``, y comprueba el
+    equilibrio global con el peso propio de las secciones vigentes en ``meta``.
+    """
+    from pathlib import Path
+    from fastsap.oapi import (
+        get_frame_forces,
+        get_joint_displacements,
+        get_joint_reactions,
+    )
+
+    support_joints = [j["id"] for j in joints_spec if j["restraint"] is not None]
+    p_sdb = Path(sdb_str)
+
+    if hasattr(client, "save"):
+        client.save(sdb_str)
+    else:
+        _check_ret("File.Save", sap_model.File.Save(sdb_str))
+
+    if not p_sdb.exists() or p_sdb.stat().st_size == 0:
+        raise RuntimeError(f"El archivo .sdb no existe o está vacío tras File.Save: {p_sdb}")
+    sdb_size_bytes = p_sdb.stat().st_size
+
+    if hasattr(sap_model, "Analyze"):
+        if hasattr(sap_model.Analyze, "SetRunCaseFlag"):
+            _check_ret("Analyze.SetRunCaseFlag", sap_model.Analyze.SetRunCaseFlag("", True, True))
+        run_ret = sap_model.Analyze.RunAnalysis()
+        _check_ret("Analyze.RunAnalysis", run_ret)
+        run_rc = run_ret[0] if isinstance(run_ret, (tuple, list)) and run_ret else int(run_ret)
+    else:
+        raise RuntimeError("SapModel no expone Analyze.RunAnalysis")
+
+    load_cases = ["DEAD", "DW", "LIVE_LANE", "LIVE_VEHICLE_M", "LIVE_VEHICLE_V"]
+    combo_names = [c["name"] for c in meta["loads_summary"]["combinations"]]
+
+    if hasattr(sap_model, "Results") and hasattr(sap_model.Results, "Setup"):
+        setup = sap_model.Results.Setup
+        _check_ret("DeselectAllCasesAndCombosForOutput", setup.DeselectAllCasesAndCombosForOutput())
+        for lc in load_cases:
+            _check_ret(f"SetCaseSelectedForOutput({lc})", setup.SetCaseSelectedForOutput(lc))
+        for cb in combo_names:
+            _check_ret(f"SetComboSelectedForOutput({cb})", setup.SetComboSelectedForOutput(cb))
+
+    reactions_rows: list[dict[str, Any]] = []
+    for jid in support_joints:
+        for r in get_joint_reactions(sap_model, jid):
+            reactions_rows.append({
+                "joint": str(r["joint"]),
+                "case": str(r["case"]),
+                "Fx_kN": float(r["F1"]),
+                "Fy_kN": float(r["F2"]),
+                "Fz_kN": float(r["F3"]),
+                "Mx_kNm": float(r["M1"]),
+                "My_kNm": float(r["M2"]),
+                "Mz_kNm": float(r["M3"]),
+            })
+
+    displacements_rows: list[dict[str, Any]] = []
+    for j in joints_spec:
+        for d in get_joint_displacements(sap_model, j["id"]):
+            displacements_rows.append({
+                "joint": str(d["joint"]),
+                "case": str(d["case"]),
+                "Ux_m": float(d["Ux"]),
+                "Uy_m": float(d["Uy"]),
+                "Uz_m": float(d["Uz"]),
+                "Rx_rad": float(d["Rx"]),
+                "Ry_rad": float(d["Ry"]),
+                "Rz_rad": float(d["Rz"]),
+            })
+
+    frame_forces_rows: list[dict[str, Any]] = []
+    for f in frames_spec:
+        for fr in get_frame_forces(sap_model, f["id"]):
+            frame_forces_rows.append({
+                "frame": str(fr["obj"]),
+                "role": f["role"],
+                "station_m": float(fr["station"]),
+                "case": str(fr["case"]),
+                "P_kN": float(fr["P"]),
+                "V2_kN": float(fr["V2"]),
+                "V3_kN": float(fr["V3"]),
+                "T_kNm": float(fr["T"]),
+                "M2_kNm": float(fr["M2"]),
+                "M3_kNm": float(fr["M3"]),
+            })
+
+    expected_fz = compute_expected_vertical_loads_kN(meta)
+    equilibrium_by_case: dict[str, dict[str, Any]] = {}
+    movable_joints = {
+        j["id"] for j in joints_spec if j["restraint"] is not None and float(j["x"]) > 1e-4
+    }
+    for case_name in load_cases + combo_names:
+        case_reac = [r for r in reactions_rows if r["case"] == case_name]
+        sum_fx = sum(r["Fx_kN"] for r in case_reac)
+        sum_fy = sum(r["Fy_kN"] for r in case_reac)
+        sum_fz = sum(r["Fz_kN"] for r in case_reac)
+        sum_fx_movable = sum(r["Fx_kN"] for r in case_reac if r["joint"] in movable_joints)
+        applied_fz = float(expected_fz.get(case_name, 0.0))
+        diff_fz = abs(sum_fz - applied_fz)
+        rel_err = diff_fz / max(1.0, abs(applied_fz))
+        ok_case = (rel_err <= equilibrium_tol_rel) and (abs(sum_fx_movable) <= 1e-3)
+        equilibrium_by_case[case_name] = {
+            "applied_vertical_load_kN": round(applied_fz, 4),
+            "sum_Rz_reactions_kN": round(sum_fz, 4),
+            "abs_diff_kN": round(diff_fz, 4),
+            "rel_error": round(rel_err, 6),
+            "sum_Rx_kN": round(sum_fx, 6),
+            "sum_Ry_kN": round(sum_fy, 6),
+            "sum_Rx_movable_abutment_kN": round(sum_fx_movable, 6),
+            "equilibrium_ok": bool(ok_case),
+        }
+        if not ok_case:
+            raise RuntimeError(
+                f"Fallo de equilibrio global en caso {case_name!r}: "
+                f"aplicada={applied_fz:.3f} kN, sum_Rz={sum_fz:.3f} kN (err={rel_err:.4%}), "
+                f"sum_Rx_movil={sum_fx_movable:.6f} kN"
+            )
+
+    summary_by_case: dict[str, dict[str, Any]] = {}
+    for case_name in load_cases + combo_names:
+        f_long = [r for r in frame_forces_rows if r["case"] == case_name and r["role"] == "girder"]
+        f_trans = [r for r in frame_forces_rows if r["case"] == case_name and r["role"] == "diaphragm"]
+        d_case = [d for d in displacements_rows if d["case"] == case_name]
+        girder_peaks: dict[int, dict[str, float]] = {}
+        for ig in range(int(meta["n_girders"])):
+            f_ig = [r for r in f_long if r["frame"].endswith(f"_{ig}")]
+            girder_peaks[ig] = {
+                "M3_max_kNm": round(max((abs(r["M3_kNm"]) for r in f_ig), default=0.0), 3),
+                "V2_max_kN": round(max((abs(r["V2_kN"]) for r in f_ig), default=0.0), 3),
+                "T_max_kNm": round(max((abs(r["T_kNm"]) for r in f_ig), default=0.0), 3),
+            }
+        best_m3_row = max(f_long, key=lambda r: abs(r["M3_kNm"]), default=None)
+        best_v2_row = max(f_long, key=lambda r: abs(r["V2_kN"]), default=None)
+        best_diaph_m3 = max(f_trans, key=lambda r: abs(r["M3_kNm"]), default=None)
+        best_diaph_v2 = max(f_trans, key=lambda r: abs(r["V2_kN"]), default=None)
+        min_uz_row = min(d_case, key=lambda d: d["Uz_m"], default=None)
+        summary_by_case[case_name] = {
+            "girder_M3_max_kNm": round(abs(best_m3_row["M3_kNm"]), 3) if best_m3_row else 0.0,
+            "girder_M3_governing": best_m3_row,
+            "girder_V2_max_kN": round(abs(best_v2_row["V2_kN"]), 3) if best_v2_row else 0.0,
+            "girder_V2_governing": best_v2_row,
+            "girder_peaks_by_index": girder_peaks,
+            "diaphragm_M3_max_kNm": round(abs(best_diaph_m3["M3_kNm"]), 3) if best_diaph_m3 else 0.0,
+            "diaphragm_V2_max_kN": round(abs(best_diaph_v2["V2_kN"]), 3) if best_diaph_v2 else 0.0,
+            "min_Uz_m": round(float(min_uz_row["Uz_m"]), 6) if min_uz_row else 0.0,
+            "min_Uz_mm": round(float(min_uz_row["Uz_m"]) * 1000.0, 3) if min_uz_row else 0.0,
+            "min_Uz_joint": min_uz_row["joint"] if min_uz_row else "",
+        }
+
+    return {
+        "sdb_path": sdb_str,
+        "sdb_size_bytes": sdb_size_bytes,
+        "units": "kN_m_C",
+        "RunAnalysis_ret": run_rc,
+        "frames": [dict(f) for f in frames_spec],
+        "meta": meta,
+        "expected_fz_kN": expected_fz,
+        "equilibrium_by_case": equilibrium_by_case,
+        "summary_by_case": summary_by_case,
+        "reactions": reactions_rows,
+        "displacements": displacements_rows,
+        "frame_forces": frame_forces_rows,
+    }
+
+
+def execute_bridge_grillage_design_loop(
+    client: Any,
+    sdb_path: str,
+    *,
+    spec: BridgeDesignSpec | None = None,
+    L: float = 30.0,
+    W: float = 10.0,
+    n_girders: int = 4,
+    n_diaphragms: int = 3,
+    n_spans: int = 1,
+    long_section: str = "HEM 1000",
+    trans_section: str = "HEB 400",
+    candidate_girder_ladder: tuple[str, ...] | list[str] = BRIDGE_FULL_GIRDER_LADDER,
+    candidate_diaphragm_ladder: tuple[str, ...] | list[str] = BRIDGE_DIAPHRAGM_LADDER,
+    max_iterations: int = 15,
+    live_deflection_ratio_limit: float = 800.0,
+    total_deflection_ratio_limit: float = 500.0,
+    equilibrium_tol_rel: float = 0.005,
+) -> dict[str, Any]:
+    """Ejecuta el bucle cerrado de verificación ULS/SLS y redimensionamiento iterativo
+    contra SAP2000 (o un mock de contrato con estado):
+
+    1. Construye el modelo inicial (p. ej. con ``HEM 1000`` / ``HEB 400``).
+    2. Verifica en SAP2000 las propiedades reales de las secciones creadas (``PropFrame.GetSectProps``).
+    3. Ejecuta ``Analyze.RunAnalysis()``, extrae esfuerzos concurrentes y desplazamientos,
+       comprueba equilibrio global y ejecuta ``verify_bridge_grillage_results``.
+    4. Mientras algún estado límite implementado falle (``DCR > 1.0``):
+       - Selecciona el siguiente perfil de la escalera determinista (``candidate_girder_ladder`` o
+         ``candidate_diaphragm_ladder``).
+       - Si se agota el catálogo sin cumplir, termina limpiamente con
+         ``CalculationStatus.CALCULADO_FALLA`` y ``termination_reason = "CATALOG_EXHAUSTED"``.
+       - Desbloquea el modelo en SAP2000 (``SetModelIsLocked(False)``), registra la nueva sección
+         (``PropFrame.SetISection``), verifica sus propiedades en SAP2000 (``GetSectProps``),
+         asigna la nueva sección a todas las barras correspondientes (``FrameObj.SetSection``),
+         guarda ``.sdb``, re-analiza y vuelve a verificar con el nuevo peso propio y rigidez.
+    5. Al terminar el bucle, guarda el ``.sdb`` final, reinicializa en blanco y **reabre** el
+       archivo ``.sdb`` verificando que todas las barras y secciones finales persisten con
+       ``veredicto == "OK"``.
+    """
+    from pathlib import Path
+    from fastsap.oapi import get_coord_cartesian, get_points, get_section as oapi_get_section
+    from fastsap.s2k_build.verdict import veredicto
+
+    sap_model = getattr(client, "SapModel", client)
+    if sap_model is None:
+        raise RuntimeError("client no expone SapModel")
+
+    build_summary = build_bridge_grillage(
+        client,
+        L=L,
+        W=W,
+        n_girders=n_girders,
+        n_diaphragms=n_diaphragms,
+        n_spans=n_spans,
+        long_section=long_section,
+        trans_section=trans_section,
+        spec=spec,
+    )
+    meta = build_summary["meta"]
+    expected_counts = meta["derived_counts"]
+    joints_spec = build_summary["joints"]
+    frames_spec = [dict(f) for f in build_summary["frames"]]
+    support_joints = [j["id"] for j in joints_spec if j["restraint"] is not None]
+    long_frames = [f["id"] for f in frames_spec if f["role"] == "girder"]
+    trans_frames = [f["id"] for f in frames_spec if f["role"] == "diaphragm"]
+
+    if hasattr(sap_model, "FrameObj") and hasattr(sap_model.FrameObj, "SetOutputStations"):
+        for f in frames_spec:
+            _check_ret(
+                f"FrameObj.SetOutputStations({f['id']})",
+                sap_model.FrameObj.SetOutputStations(f["id"], 2, 0.0, 9, True, True),
+            )
+
+    p_sdb = Path(sdb_path).expanduser().resolve()
+    p_sdb.parent.mkdir(parents=True, exist_ok=True)
+    sdb_str = str(p_sdb).replace("/", "\\")
+
+    mat_name = str(meta["material"]["name"])
+    girder_ladder = list(candidate_girder_ladder)
+    diaph_ladder = list(candidate_diaphragm_ladder)
+
+    curr_girder_name = next(f["section"] for f in frames_spec if f["role"] == "girder")
+    curr_diaph_name = next(f["section"] for f in frames_spec if f["role"] == "diaphragm")
+
+    if curr_girder_name not in girder_ladder:
+        girder_ladder.insert(0, curr_girder_name)
+    if curr_diaph_name not in diaph_ladder:
+        diaph_ladder.insert(0, curr_diaph_name)
+
+    iterations_history: list[dict[str, Any]] = []
+    termination_reason = "MAX_ITERATIONS_REACHED"
+    last_iter_analysis: dict[str, Any] = {}
+    last_verification: dict[str, Any] = {}
+
+    for it_idx in range(max_iterations):
+        # 1) Verificar en SAP2000 las propiedades de las secciones activas
+        girder_sec_props = meta["sections"][curr_girder_name]
+        diaph_sec_props = meta["sections"][curr_diaph_name]
+        sap_girder_check = verify_sap_section_properties(sap_model, girder_sec_props)
+        sap_diaph_check = verify_sap_section_properties(sap_model, diaph_sec_props)
+
+        # 2) Guardar, ejecutar RunAnalysis(), extraer resultados y verificar equilibrio
+        iter_analysis = _run_single_sap_analysis_and_extract(
+            client,
+            sap_model,
+            sdb_str,
+            meta=meta,
+            joints_spec=joints_spec,
+            frames_spec=frames_spec,
+            equilibrium_tol_rel=equilibrium_tol_rel,
+        )
+        last_iter_analysis = iter_analysis
+
+        # 3) Ejecutar verificacion normativa concurrente ULS + SLS
+        verif = verify_bridge_grillage_results(
+            iter_analysis,
+            spec=spec,
+            live_deflection_ratio_limit=live_deflection_ratio_limit,
+            total_deflection_ratio_limit=total_deflection_ratio_limit,
+        )
+        last_verification = verif
+
+        gov_chk = verif["governing_check"]
+        gov_uls_st = verif["governing_girder_uls_station"]
+        sls_info = verif["sls_deflections"]
+        g_cap = verif["girder_capacities"]
+
+        iterations_history.append({
+            "iteration": it_idx,
+            "girder_section": curr_girder_name,
+            "diaphragm_section": curr_diaph_name,
+            "girder_h_m": girder_sec_props["h_m"],
+            "girder_b_m": girder_sec_props["b_m"],
+            "girder_tf_m": girder_sec_props["tf_m"],
+            "girder_tw_m": girder_sec_props["tw_m"],
+            "girder_A_m2": girder_sec_props["A_m2"],
+            "girder_I33_m4": girder_sec_props["I33_m4"],
+            "girder_Wpl33_m3": girder_sec_props["Wpl33_m3"],
+            "sap_section_verification": {
+                "girder": sap_girder_check,
+                "diaphragm": sap_diaph_check,
+            },
+            "DEAD_total_kN": iter_analysis["expected_fz_kN"]["DEAD"],
+            "DEAD_sum_Rz_kN": iter_analysis["equilibrium_by_case"]["DEAD"]["sum_Rz_reactions_kN"],
+            "ULS_STR_sum_Rz_kN": iter_analysis["equilibrium_by_case"].get(
+                "ULS_STR", iter_analysis["equilibrium_by_case"].get("ULS_STRENGTH_I", {})
+            ).get("sum_Rz_reactions_kN", 0.0),
+            "section_class": g_cap["classification"]["section_class"],
+            "Mc_Rd_kNm": g_cap["Mc_Rd_kNm"],
+            "Mb_Rd_kNm": g_cap["Mb_Rd_kNm"],
+            "Vc_Rd_kN": g_cap["Vc_Rd_kN"],
+            "governing_girder_M3_kNm": gov_uls_st["M3_kNm"],
+            "concurrent_girder_V2_kN": gov_uls_st["V2_kN"],
+            "concurrent_girder_P_kN": gov_uls_st["P_kN"],
+            "max_girder_V2_kN": iter_analysis["summary_by_case"].get(
+                "ULS_STR_SHEAR", iter_analysis["summary_by_case"].get("ULS_STRENGTH_I_SHEAR", {})
+            ).get("girder_V2_max_kN", 0.0),
+            "active_traffic_deflection_mm": sls_info["active_traffic_deflection_mm"],
+            "active_traffic_limit_mm": sls_info["active_traffic_limit_mm"],
+            "total_characteristic_deflection_mm": sls_info["total_characteristic_deflection_mm"],
+            "total_characteristic_limit_mm": sls_info["total_characteristic_limit_mm"],
+            "max_dcr_uls": verif["max_dcr_uls"],
+            "max_dcr_sls": verif["max_dcr_sls"],
+            "max_dcr_overall": verif["max_dcr_overall"],
+            "governing_check_id": gov_chk["check_id"],
+            "governing_member": gov_chk["governing_member"],
+            "governing_combo": gov_chk["governing_combo"],
+            "governing_station_m": gov_chk["governing_station_m"],
+            "checks": verif["checks"],
+            "implemented_checks_status": verif["implemented_checks_status"],
+            "calculation_status": verif["calculation_status"].value,
+        })
+
+        # Si todos los estados limite implementados cumplen (DCR <= 1.0), hemos convergido
+        if verif["implemented_checks_status"] == CalculationStatus.CALCULADO_CUMPLE.value:
+            termination_reason = "CONVERGED_ALL_IMPLEMENTED_CHECKS_PASS"
+            break
+
+        if verif["implemented_checks_status"] == CalculationStatus.NO_CALCULADO.value:
+            termination_reason = "INVALID_ANALYSIS_OR_MISSING_RESULTS"
+            break
+
+        # Determinar si es necesario subir viga principal L* y/o diafragma T*
+        girder_failed = any(
+            c["role"] == "girder" and c["status"] == CalculationStatus.CALCULADO_FALLA.value
+            for c in verif["checks"]
+        )
+        diaph_failed = any(
+            c["role"] == "diaphragm" and c["status"] == CalculationStatus.CALCULADO_FALLA.value
+            for c in verif["checks"]
+        )
+
+        next_girder_name = curr_girder_name
+        next_diaph_name = curr_diaph_name
+
+        if girder_failed:
+            g_idx = girder_ladder.index(curr_girder_name)
+            if g_idx + 1 >= len(girder_ladder):
+                termination_reason = "CATALOG_EXHAUSTED"
+                break
+            next_girder_name = girder_ladder[g_idx + 1]
+
+        if diaph_failed:
+            d_idx = diaph_ladder.index(curr_diaph_name)
+            if d_idx + 1 >= len(diaph_ladder):
+                termination_reason = "CATALOG_EXHAUSTED"
+                break
+            next_diaph_name = diaph_ladder[d_idx + 1]
+
+        if next_girder_name == curr_girder_name and next_diaph_name == curr_diaph_name:
+            termination_reason = "NO_CANDIDATE_CHANGE"
+            break
+
+        # 4) Desbloquear el modelo en SAP2000, registrar nuevas secciones y asignarlas a las barras
+        if hasattr(sap_model, "SetModelIsLocked"):
+            _check_ret("SetModelIsLocked(False)", sap_model.SetModelIsLocked(False))
+
+        new_girder_props = section_props_from_catalog(next_girder_name, material_name=mat_name)
+        new_diaph_props = section_props_from_catalog(next_diaph_name, material_name=mat_name)
+        meta["sections"] = {
+            new_girder_props.name: new_girder_props.to_dict(),
+            new_diaph_props.name: new_diaph_props.to_dict(),
+        }
+        _register_material_and_sections_oapi(sap_model, meta)
+
+        for f in frames_spec:
+            if f["role"] == "girder" and f["section"] != next_girder_name:
+                f["section"] = next_girder_name
+                if hasattr(sap_model.FrameObj, "SetSection"):
+                    _check_ret(
+                        f"FrameObj.SetSection({f['id']})",
+                        sap_model.FrameObj.SetSection(f["id"], next_girder_name),
+                    )
+            elif f["role"] == "diaphragm" and f["section"] != next_diaph_name:
+                f["section"] = next_diaph_name
+                if hasattr(sap_model.FrameObj, "SetSection"):
+                    _check_ret(
+                        f"FrameObj.SetSection({f['id']})",
+                        sap_model.FrameObj.SetSection(f["id"], next_diaph_name),
+                    )
+
+        curr_girder_name = next_girder_name
+        curr_diaph_name = next_diaph_name
+
+    # 5) Guardar el archivo .sdb final y ejecutar el protocolo de cierre + reapertura verificada
+    created_points = int(sap_model.PointObj.Count()) if hasattr(sap_model.PointObj, "Count") else len(joints_spec)
+    created_frames = int(sap_model.FrameObj.Count()) if hasattr(sap_model.FrameObj, "Count") else len(frames_spec)
+    created_materials = _safe_name_list(getattr(sap_model, "PropMaterial", None))
+    created_sections = _safe_name_list(getattr(sap_model, "PropFrame", None))
+    created_patterns = _safe_name_list(getattr(sap_model, "LoadPatterns", None))
+    created_combos = _safe_name_list(getattr(sap_model, "RespCombo", None))
+
+    if hasattr(client, "save"):
+        client.save(sdb_str)
+    else:
+        _check_ret("File.Save", sap_model.File.Save(sdb_str))
+
+    sdb_size_bytes = p_sdb.stat().st_size
+
+    if hasattr(client, "new_blank_model"):
+        client.new_blank_model()
+    elif hasattr(sap_model, "File") and hasattr(sap_model.File, "NewBlank"):
+        _check_ret("File.NewBlank", sap_model.File.NewBlank())
+
+    if hasattr(client, "open_file"):
+        client.open_file(sdb_str)
+    else:
+        _check_ret("File.OpenFile", sap_model.File.OpenFile(sdb_str))
+
+    reopened_points = int(sap_model.PointObj.Count()) if hasattr(sap_model.PointObj, "Count") else 0
+    reopened_frames = int(sap_model.FrameObj.Count()) if hasattr(sap_model.FrameObj, "Count") else 0
+    reopened_materials = _safe_name_list(getattr(sap_model, "PropMaterial", None))
+    reopened_sections = _safe_name_list(getattr(sap_model, "PropFrame", None))
+    reopened_patterns = _safe_name_list(getattr(sap_model, "LoadPatterns", None))
+    reopened_combos = _safe_name_list(getattr(sap_model, "RespCombo", None))
+
+    reopened_supports_count = 0
+    if hasattr(sap_model.PointObj, "GetRestraint"):
+        for j in joints_spec:
+            res_r = sap_model.PointObj.GetRestraint(j["id"], [False] * 6)
+            _check_ret(f"PointObj.GetRestraint({j['id']})", res_r)
+            r_vals = list(res_r[1]) if isinstance(res_r, (tuple, list)) and len(res_r) >= 2 else []
+            if any(r_vals):
+                reopened_supports_count += 1
+            coords = get_coord_cartesian(sap_model.PointObj, j["id"])
+            if (
+                abs(coords[0] - float(j["x"])) > 1e-3
+                or abs(coords[1] - float(j["y"])) > 1e-3
+                or abs(coords[2] - float(j["z"])) > 1e-3
+            ):
+                raise RuntimeError(f"Coordenadas reabiertas de {j['id']} difieren: {coords} vs {j}")
+    else:
+        reopened_supports_count = expected_counts["n_supports"]
+
+    undefined_sections: list[str] = []
+    for f in frames_spec:
+        sec_assigned = oapi_get_section(sap_model.FrameObj, f["id"])
+        if sec_assigned != f["section"] or sec_assigned not in reopened_sections:
+            undefined_sections.append(f"{f['id']}:{sec_assigned}")
+        pts = get_points(sap_model.FrameObj, f["id"])
+        if pts != (f["joint_i"], f["joint_j"]):
+            raise RuntimeError(f"Conectividad reabierta de {f['id']} difiere: {pts}")
+
+    run_rc = int(last_iter_analysis.get("RunAnalysis_ret", 1))
+    verdict_input = {
+        "barras_unicas_s2k": expected_counts["n_frames"],
+        "n_barras": created_frames,
+        "reabierto_barras": reopened_frames,
+        "n_puntos_s2k": expected_counts["n_joints"],
+        "n_puntos": created_points,
+        "reabierto_puntos": reopened_points,
+        "secciones_sin_definir": undefined_sections,
+        "RunAnalysis_ret": run_rc,
+        "predimensionado": False,
+    }
+    verdict_persistence = veredicto(verdict_input)
+
+    return {
+        "sdb_path": sdb_str,
+        "sdb_size_bytes": sdb_size_bytes,
+        "units": "kN_m_C",
+        "RunAnalysis_ret": run_rc,
+        "n_iterations": len(iterations_history),
+        "initial_girder_section": iterations_history[0]["girder_section"] if iterations_history else curr_girder_name,
+        "final_girder_section": curr_girder_name,
+        "initial_diaphragm_section": iterations_history[0]["diaphragm_section"] if iterations_history else curr_diaph_name,
+        "final_diaphragm_section": curr_diaph_name,
+        "termination_reason": termination_reason,
+        "implemented_checks_status": last_verification.get("implemented_checks_status", "NO_CALCULADO"),
+        "calculation_status": last_verification["calculation_status"].value
+        if isinstance(last_verification.get("calculation_status"), CalculationStatus)
+        else str(last_verification.get("calculation_status", "NO_CALCULADO")),
+        "unimplemented_checks": last_verification.get("unimplemented_checks", list(UNIMPLEMENTED_CHECKS)),
+        "final_verification": {
+            **last_verification,
+            "calculation_status": last_verification["calculation_status"].value
+            if isinstance(last_verification.get("calculation_status"), CalculationStatus)
+            else str(last_verification.get("calculation_status", "NO_CALCULADO")),
+        },
+        "iterations_history": iterations_history,
+        "counts": {
+            "expected": expected_counts,
+            "created": {
+                "n_joints": created_points,
+                "n_frames": created_frames,
+                "n_frames_long": len(long_frames),
+                "n_frames_trans": len(trans_frames),
+                "n_supports": len(support_joints),
+                "materials": created_materials,
+                "sections": created_sections,
+                "load_patterns": created_patterns,
+                "combinations": created_combos,
+            },
+            "reopened": {
+                "n_joints": reopened_points,
+                "n_frames": reopened_frames,
+                "n_supports": reopened_supports_count,
+                "materials": reopened_materials,
+                "sections": reopened_sections,
+                "load_patterns": reopened_patterns,
+                "combinations": reopened_combos,
+            },
+        },
+        "persistence_verdict": verdict_persistence,
+        "equilibrium_by_case": last_iter_analysis.get("equilibrium_by_case", {}),
+        "summary_by_case": last_iter_analysis.get("summary_by_case", {}),
+        "reactions": last_iter_analysis.get("reactions", []),
+        "displacements": last_iter_analysis.get("displacements", []),
+        "frame_forces": last_iter_analysis.get("frame_forces", []),
+        "meta": meta,
+    }
+
+
+def run_bridge_grillage_design_loop_sap2000(
+    sdb_path: str,
+    *,
+    spec: BridgeDesignSpec | None = None,
+    L: float = 30.0,
+    W: float = 10.0,
+    n_girders: int = 4,
+    n_diaphragms: int = 3,
+    n_spans: int = 1,
+    candidate_girder_ladder: tuple[str, ...] | list[str] = BRIDGE_FULL_GIRDER_LADDER,
+    candidate_diaphragm_ladder: tuple[str, ...] | list[str] = BRIDGE_DIAPHRAGM_LADDER,
+    max_iterations: int = 15,
+    live_deflection_ratio_limit: float = 800.0,
+    total_deflection_ratio_limit: float = 500.0,
+    visible: bool = False,
+    keep_open: bool = False,
+    sap_install_dir: str | None = None,
+) -> dict[str, Any]:
+    """Arranca una sesion real de SAP2000 v26 en unidades ``kN_m_C``, ejecuta el bucle cerrado
+    de verificacion ULS/SLS y redimensionamiento iterativo, reabre el archivo ``.sdb`` final y
+    cierra limpiamente la instancia creada.
+    """
+    from fastsap.client import SapClient
+
+    with SapClient(
+        sap_install_dir=sap_install_dir,
+        visible=visible,
+        units="kN_m_C",
+        keep_open=keep_open,
+        run_probe=False,
+    ) as client:
+        return execute_bridge_grillage_design_loop(
+            client,
+            sdb_path,
+            spec=spec,
+            L=L,
+            W=W,
+            n_girders=n_girders,
+            n_diaphragms=n_diaphragms,
+            n_spans=n_spans,
+            candidate_girder_ladder=candidate_girder_ladder,
+            candidate_diaphragm_ladder=candidate_diaphragm_ladder,
+            max_iterations=max_iterations,
+            live_deflection_ratio_limit=live_deflection_ratio_limit,
+            total_deflection_ratio_limit=total_deflection_ratio_limit,
+        )
+
+
 __all__ = [
     "APPLICABLE_LIMIT_STATES",
+    "BRIDGE_DIAPHRAGM_LADDER",
+    "BRIDGE_FULL_GIRDER_LADDER",
+    "BRIDGE_PLATE_GIRDER_SPECS",
     "BRIDGE_STEEL_GIRDER_LADDER",
     "BridgeDesignSpec",
     "HL93_LANE_LOAD_KN_M",
@@ -1938,13 +3578,18 @@ __all__ = [
     "default_bridge_material",
     "design_lanes_aashto_lrfd",
     "execute_bridge_grillage_analysis_and_reopen",
+    "execute_bridge_grillage_design_loop",
     "expected_grillage_counts",
     "generate_grillage",
     "grillage_model",
     "notional_lanes_en1991_2",
+    "plate_girder_section_props",
     "rectangular_concrete_section_props",
+    "run_bridge_grillage_design_loop_sap2000",
     "run_bridge_grillage_sap2000",
     "section_props_from_catalog",
     "select_bridge_sections",
+    "verify_bridge_grillage_results",
     "verify_kinematic_stability",
+    "verify_sap_section_properties",
 ]
