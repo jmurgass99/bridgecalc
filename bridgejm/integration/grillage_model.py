@@ -1451,6 +1451,476 @@ def build_bridge_grillage(
     return summary
 
 
+def _safe_name_list(subobj: Any) -> list[str]:
+    """Lee GetNameList de un subobjeto OAPI (o mock) verificando ret == 0."""
+    if subobj is None or not hasattr(subobj, "GetNameList"):
+        return []
+    res = subobj.GetNameList(0, None)
+    _check_ret(f"{type(subobj).__name__}.GetNameList", res)
+    if isinstance(res, (tuple, list)) and len(res) >= 3:
+        return [str(x) for x in (res[2] or []) if x]
+    return []
+
+
+def compute_expected_vertical_loads_kN(meta: dict[str, Any]) -> dict[str, float]:
+    """Calcula la carga vertical gravitatoria total aplicada (hacia -Z, en kN) por patron y combo.
+
+    - ``DEAD``: peso propio de vigas longitudinales (L_total * n_girders * A_girder * gamma)
+      + peso propio de diafragmas transversales (n_x * W * A_diaph * gamma)
+      + carga muerta de losa de hormigon sobre las vigas longitudinales.
+    - ``DW``: pavimento + barreras sobre todas las vigas longitudinales.
+    - ``LIVE_LANE``: sobrecarga uniforme de los carriles nocionales + area remanente.
+    - ``LIVE_VEHICLE_M``: suma de ejes del vehiculo de diseno en posicion de M+.
+    - ``LIVE_VEHICLE_V``: suma de ejes del vehiculo de diseno en posicion de Vmax.
+    """
+    loads = meta["loads_summary"]
+    mat = meta["material"]
+    sections = meta["sections"]
+    gamma = float(mat["gamma_kN_m3"])
+    L_tot = float(meta["total_length"])
+    W = float(meta["width_m"])
+    n_girders = int(meta["n_girders"])
+    nx = int(meta["derived_counts"]["n_x"])
+
+    sec_names = list(sections.keys())
+    girder_sec = sections[sec_names[0]]
+    diaph_sec = sections[sec_names[1]] if len(sec_names) > 1 else girder_sec
+
+    # En SAP2000 SetISection(h, b, tf, tw, b, tf) modela las dos alas y el alma sin radios de acuerdo r;
+    # cuando existe A_sap_iset_m2 leido de PropFrame.GetSectProps o calculado de 2*b*tf + (h-2*tf)*tw,
+    # ese es el area que SAP2000 multiplica por gamma para el peso propio del elemento.
+    def _sap_area(sec_dict: dict[str, Any]) -> float:
+        if "A_sap_m2" in sec_dict:
+            return float(sec_dict["A_sap_m2"])
+        if sec_dict.get("shape") == "I":
+            h_s = float(sec_dict["h_m"])
+            b_s = float(sec_dict["b_m"])
+            tf_s = float(sec_dict["tf_m"])
+            tw_s = float(sec_dict["tw_m"])
+            return 2.0 * b_s * tf_s + max(0.0, h_s - 2.0 * tf_s) * tw_s
+        return float(sec_dict["A_m2"])
+
+    sw_girders_kN = n_girders * L_tot * _sap_area(girder_sec) * gamma
+    sw_diaphs_kN = nx * W * _sap_area(diaph_sec) * gamma
+    slab_kN = n_girders * L_tot * float(loads["q_slab_per_girder_kN_m"])
+    dead_total_kN = sw_girders_kN + sw_diaphs_kN + slab_kN
+
+    dw_total_kN = n_girders * L_tot * float(loads["q_dw_per_girder_kN_m"])
+    q_lane_by_g = loads.get("q_lane_by_girder_kN_m", {})
+    if q_lane_by_g:
+        live_lane_total_kN = sum(float(v) for v in q_lane_by_g.values()) * L_tot
+    else:
+        live_lane_total_kN = n_girders * L_tot * float(loads["q_lane_per_girder_kN_m"])
+
+    veh_m_total_kN = sum(float(pt["load_kN"]) for pt in loads.get("frame_point_loads_LIVE_VEHICLE_M", []))
+    veh_v_total_kN = sum(float(pt["load_kN"]) for pt in loads.get("frame_point_loads_LIVE_VEHICLE_V", []))
+
+    out: dict[str, float] = {
+        "DEAD_self_weight_girders_kN": round(sw_girders_kN, 4),
+        "DEAD_self_weight_diaphragms_kN": round(sw_diaphs_kN, 4),
+        "DEAD_slab_kN": round(slab_kN, 4),
+        "DEAD": round(dead_total_kN, 4),
+        "DW": round(dw_total_kN, 4),
+        "LIVE_LANE": round(live_lane_total_kN, 4),
+        "LIVE_VEHICLE_M": round(veh_m_total_kN, 4),
+        "LIVE_VEHICLE_V": round(veh_v_total_kN, 4),
+    }
+    for combo in loads.get("combinations", []):
+        cname = combo["name"]
+        c_tot = 0.0
+        for pat_name, sf in combo["factors"].items():
+            c_tot += float(sf) * out.get(pat_name, 0.0)
+        out[cname] = round(c_tot, 4)
+    return out
+
+
+def execute_bridge_grillage_analysis_and_reopen(
+    client: Any,
+    sdb_path: str,
+    *,
+    spec: BridgeDesignSpec | None = None,
+    L: float = 30.0,
+    W: float = 10.0,
+    n_girders: int = 4,
+    n_diaphragms: int = 3,
+    n_spans: int = 1,
+    equilibrium_tol_rel: float = 0.005,
+) -> dict[str, Any]:
+    """Ejecuta el ciclo nativo completo en SAP2000 sobre un cliente conectado (o mock de contrato):
+
+    1. Construye el modelo con ``build_bridge_grillage(client, ...)`` verificando retornos OAPI.
+    2. Verifica recuentos reales en memoria antes de guardar.
+    3. Guarda el archivo ``.sdb`` y verifica su existencia y tamano en disco.
+    4. Activa todos los casos de carga y ejecuta ``Analyze.RunAnalysis()``.
+    5. Extrae desplazamientos nodales, reacciones en apoyos y esfuerzos concurrentes
+       ``(P, V2, V3, T, M2, M3)`` en todas las barras longitudinales y transversales.
+    6. Verifica equilibrio global entre cargas gravitatorias aplicadas y suma de reacciones ``Rz``,
+       ausencia de coaccion longitudinal espuria en el estribo movil (``sum Rx(x=L) ~ 0``) y
+       comportamiento transversal activo bajo carga excentrica.
+    7. Reinicializa en blanco y reabre el archivo ``.sdb`` desde disco (``File.OpenFile``),
+       leyendo de vuelta nudos, barras, apoyos, materiales, secciones, patrones y combinaciones,
+       y evalua el contrato de reapertura ``fastsap.s2k_build.verdict.veredicto``.
+    """
+    from pathlib import Path
+    from fastsap.oapi import (
+        get_coord_cartesian,
+        get_frame_forces,
+        get_joint_displacements,
+        get_joint_reactions,
+        get_points,
+        get_section,
+    )
+    from fastsap.s2k_build.verdict import veredicto
+
+    sap_model = getattr(client, "SapModel", client)
+    if sap_model is None:
+        raise RuntimeError("client no expone SapModel")
+
+    # 1) Construir el emparrillado verificando cada retorno OAPI
+    build_summary = build_bridge_grillage(
+        client,
+        L=L,
+        W=W,
+        n_girders=n_girders,
+        n_diaphragms=n_diaphragms,
+        n_spans=n_spans,
+        spec=spec,
+    )
+    meta = build_summary["meta"]
+    expected_counts = meta["derived_counts"]
+    joints_spec = build_summary["joints"]
+    frames_spec = build_summary["frames"]
+    support_joints = [j["id"] for j in joints_spec if j["restraint"] is not None]
+    long_frames = [f["id"] for f in frames_spec if f["id"].startswith("L")]
+    trans_frames = [f["id"] for f in frames_spec if f["id"].startswith("T")]
+
+    # Configurar estaciones de salida en barras para incluir cargas puntuales y extremos
+    if hasattr(sap_model, "FrameObj") and hasattr(sap_model.FrameObj, "SetOutputStations"):
+        for f in frames_spec:
+            _check_ret(
+                f"FrameObj.SetOutputStations({f['id']})",
+                sap_model.FrameObj.SetOutputStations(f["id"], 2, 0.0, 9, True, True),
+            )
+
+    # 2) Recuentos reales en el motor antes de guardar
+    created_points = int(sap_model.PointObj.Count()) if hasattr(sap_model.PointObj, "Count") else len(joints_spec)
+    created_frames = int(sap_model.FrameObj.Count()) if hasattr(sap_model.FrameObj, "Count") else len(frames_spec)
+    created_materials = _safe_name_list(getattr(sap_model, "PropMaterial", None))
+    created_sections = _safe_name_list(getattr(sap_model, "PropFrame", None))
+    created_patterns = _safe_name_list(getattr(sap_model, "LoadPatterns", None))
+    created_combos = _safe_name_list(getattr(sap_model, "RespCombo", None))
+
+    if created_points != expected_counts["n_joints"]:
+        raise RuntimeError(
+            f"Recuento de nudos creados ({created_points}) != esperado ({expected_counts['n_joints']})"
+        )
+    if created_frames != expected_counts["n_frames"]:
+        raise RuntimeError(
+            f"Recuento de barras creadas ({created_frames}) != esperado ({expected_counts['n_frames']})"
+        )
+
+    # 3) Guardar el archivo .sdb
+    p_sdb = Path(sdb_path).expanduser().resolve()
+    p_sdb.parent.mkdir(parents=True, exist_ok=True)
+    sdb_str = str(p_sdb).replace("/", "\\")
+    if hasattr(client, "save"):
+        client.save(sdb_str)
+    else:
+        _check_ret("File.Save", sap_model.File.Save(sdb_str))
+
+    if not p_sdb.exists() or p_sdb.stat().st_size == 0:
+        raise RuntimeError(f"El archivo .sdb no existe o está vacío tras File.Save: {p_sdb}")
+    sdb_size_bytes = p_sdb.stat().st_size
+
+    # 4) Ejecutar el analisis estatico en SAP2000
+    if hasattr(sap_model, "Analyze"):
+        if hasattr(sap_model.Analyze, "SetRunCaseFlag"):
+            _check_ret("Analyze.SetRunCaseFlag", sap_model.Analyze.SetRunCaseFlag("", True, True))
+        run_ret = sap_model.Analyze.RunAnalysis()
+        _check_ret("Analyze.RunAnalysis", run_ret)
+        run_rc = run_ret[0] if isinstance(run_ret, (tuple, list)) and run_ret else int(run_ret)
+    else:
+        raise RuntimeError("SapModel no expone Analyze.RunAnalysis")
+
+    # 5) Seleccionar todos los casos y combinaciones para salida y extraer resultados
+    load_cases = ["DEAD", "DW", "LIVE_LANE", "LIVE_VEHICLE_M", "LIVE_VEHICLE_V"]
+    combo_names = [c["name"] for c in meta["loads_summary"]["combinations"]]
+
+    if hasattr(sap_model, "Results") and hasattr(sap_model.Results, "Setup"):
+        setup = sap_model.Results.Setup
+        _check_ret("DeselectAllCasesAndCombosForOutput", setup.DeselectAllCasesAndCombosForOutput())
+        for lc in load_cases:
+            _check_ret(f"SetCaseSelectedForOutput({lc})", setup.SetCaseSelectedForOutput(lc))
+        for cb in combo_names:
+            _check_ret(f"SetComboSelectedForOutput({cb})", setup.SetComboSelectedForOutput(cb))
+
+    # Extraer reacciones en los apoyos
+    reactions_rows: list[dict[str, Any]] = []
+    for jid in support_joints:
+        for r in get_joint_reactions(sap_model, jid):
+            reactions_rows.append({
+                "joint": str(r["joint"]),
+                "case": str(r["case"]),
+                "Fx_kN": float(r["F1"]),
+                "Fy_kN": float(r["F2"]),
+                "Fz_kN": float(r["F3"]),
+                "Mx_kNm": float(r["M1"]),
+                "My_kNm": float(r["M2"]),
+                "Mz_kNm": float(r["M3"]),
+            })
+
+    # Extraer desplazamientos nodales en todos los nudos
+    displacements_rows: list[dict[str, Any]] = []
+    for j in joints_spec:
+        for d in get_joint_displacements(sap_model, j["id"]):
+            displacements_rows.append({
+                "joint": str(d["joint"]),
+                "case": str(d["case"]),
+                "Ux_m": float(d["Ux"]),
+                "Uy_m": float(d["Uy"]),
+                "Uz_m": float(d["Uz"]),
+                "Rx_rad": float(d["Rx"]),
+                "Ry_rad": float(d["Ry"]),
+                "Rz_rad": float(d["Rz"]),
+            })
+
+    # Extraer esfuerzos concurrentes (P, V2, V3, T, M2, M3) en todas las barras
+    frame_forces_rows: list[dict[str, Any]] = []
+    for f in frames_spec:
+        for fr in get_frame_forces(sap_model, f["id"]):
+            frame_forces_rows.append({
+                "frame": str(fr["obj"]),
+                "role": f["role"],
+                "station_m": float(fr["station"]),
+                "case": str(fr["case"]),
+                "P_kN": float(fr["P"]),
+                "V2_kN": float(fr["V2"]),
+                "V3_kN": float(fr["V3"]),
+                "T_kNm": float(fr["T"]),
+                "M2_kNm": float(fr["M2"]),
+                "M3_kNm": float(fr["M3"]),
+            })
+
+    # 6) Comprobar equilibrio global entre cargas aplicadas y reacciones
+    expected_fz = compute_expected_vertical_loads_kN(meta)
+    equilibrium_by_case: dict[str, dict[str, Any]] = {}
+    movable_joints = {
+        j["id"] for j in joints_spec if j["restraint"] is not None and float(j["x"]) > 1e-4
+    }
+    for case_name in load_cases + combo_names:
+        case_reac = [r for r in reactions_rows if r["case"] == case_name]
+        sum_fx = sum(r["Fx_kN"] for r in case_reac)
+        sum_fy = sum(r["Fy_kN"] for r in case_reac)
+        sum_fz = sum(r["Fz_kN"] for r in case_reac)
+        sum_fx_movable = sum(r["Fx_kN"] for r in case_reac if r["joint"] in movable_joints)
+        applied_fz = float(expected_fz.get(case_name, 0.0))
+        diff_fz = abs(sum_fz - applied_fz)
+        rel_err = diff_fz / max(1.0, abs(applied_fz))
+        ok_case = (rel_err <= equilibrium_tol_rel) and (abs(sum_fx_movable) <= 1e-3)
+        equilibrium_by_case[case_name] = {
+            "applied_vertical_load_kN": round(applied_fz, 4),
+            "sum_Rz_reactions_kN": round(sum_fz, 4),
+            "abs_diff_kN": round(diff_fz, 4),
+            "rel_error": round(rel_err, 6),
+            "sum_Rx_kN": round(sum_fx, 6),
+            "sum_Ry_kN": round(sum_fy, 6),
+            "sum_Rx_movable_abutment_kN": round(sum_fx_movable, 6),
+            "equilibrium_ok": bool(ok_case),
+        }
+        if not ok_case:
+            raise RuntimeError(
+                f"Fallo de equilibrio global en caso {case_name!r}: "
+                f"aplicada={applied_fz:.3f} kN, sum_Rz={sum_fz:.3f} kN (err={rel_err:.4%}), "
+                f"sum_Rx_movil={sum_fx_movable:.6f} kN"
+            )
+
+    # Resumen de esfuerzos maximos y desplazamientos por rol (vigas longitudinales vs diafragmas)
+    summary_by_case: dict[str, dict[str, Any]] = {}
+    for case_name in load_cases + combo_names:
+        f_long = [r for r in frame_forces_rows if r["case"] == case_name and r["role"] == "girder"]
+        f_trans = [r for r in frame_forces_rows if r["case"] == case_name and r["role"] == "diaphragm"]
+        d_case = [d for d in displacements_rows if d["case"] == case_name]
+
+        # Esfuerzos por viga individual ig=0..n_girders-1 para evidenciar excentricidad transversal
+        girder_peaks: dict[int, dict[str, float]] = {}
+        for ig in range(int(meta["n_girders"])):
+            f_ig = [r for r in f_long if r["frame"].endswith(f"_{ig}")]
+            girder_peaks[ig] = {
+                "M3_max_kNm": round(max((abs(r["M3_kNm"]) for r in f_ig), default=0.0), 3),
+                "V2_max_kN": round(max((abs(r["V2_kN"]) for r in f_ig), default=0.0), 3),
+                "T_max_kNm": round(max((abs(r["T_kNm"]) for r in f_ig), default=0.0), 3),
+            }
+
+        best_m3_row = max(f_long, key=lambda r: abs(r["M3_kNm"]), default=None)
+        best_v2_row = max(f_long, key=lambda r: abs(r["V2_kN"]), default=None)
+        best_diaph_m3 = max(f_trans, key=lambda r: abs(r["M3_kNm"]), default=None)
+        best_diaph_v2 = max(f_trans, key=lambda r: abs(r["V2_kN"]), default=None)
+        min_uz_row = min(d_case, key=lambda d: d["Uz_m"], default=None)
+
+        summary_by_case[case_name] = {
+            "girder_M3_max_kNm": round(abs(best_m3_row["M3_kNm"]), 3) if best_m3_row else 0.0,
+            "girder_M3_governing": best_m3_row,
+            "girder_V2_max_kN": round(abs(best_v2_row["V2_kN"]), 3) if best_v2_row else 0.0,
+            "girder_V2_governing": best_v2_row,
+            "girder_peaks_by_index": girder_peaks,
+            "diaphragm_M3_max_kNm": round(abs(best_diaph_m3["M3_kNm"]), 3) if best_diaph_m3 else 0.0,
+            "diaphragm_V2_max_kN": round(abs(best_diaph_v2["V2_kN"]), 3) if best_diaph_v2 else 0.0,
+            "min_Uz_m": round(float(min_uz_row["Uz_m"]), 6) if min_uz_row else 0.0,
+            "min_Uz_mm": round(float(min_uz_row["Uz_m"]) * 1000.0, 3) if min_uz_row else 0.0,
+            "min_Uz_joint": min_uz_row["joint"] if min_uz_row else "",
+        }
+
+    # Guardar nuevamente con los resultados de analisis antes de cerrar/reabrir
+    if hasattr(client, "save"):
+        client.save(sdb_str)
+    else:
+        _check_ret("File.Save", sap_model.File.Save(sdb_str))
+
+    # 7) Cerrar / reinicializar modelo en blanco y REABRIR el archivo .sdb persistido
+    if hasattr(client, "new_blank_model"):
+        client.new_blank_model()
+    elif hasattr(sap_model, "File") and hasattr(sap_model.File, "NewBlank"):
+        _check_ret("File.NewBlank", sap_model.File.NewBlank())
+
+    if hasattr(client, "open_file"):
+        client.open_file(sdb_str)
+    else:
+        _check_ret("File.OpenFile", sap_model.File.OpenFile(sdb_str))
+
+    reopened_points = int(sap_model.PointObj.Count()) if hasattr(sap_model.PointObj, "Count") else 0
+    reopened_frames = int(sap_model.FrameObj.Count()) if hasattr(sap_model.FrameObj, "Count") else 0
+    reopened_materials = _safe_name_list(getattr(sap_model, "PropMaterial", None))
+    reopened_sections = _safe_name_list(getattr(sap_model, "PropFrame", None))
+    reopened_patterns = _safe_name_list(getattr(sap_model, "LoadPatterns", None))
+    reopened_combos = _safe_name_list(getattr(sap_model, "RespCombo", None))
+
+    # Verificar coordenadas y apoyos de los nudos reabiertos y secciones de las barras reabiertas
+    reopened_supports_count = 0
+    if hasattr(sap_model.PointObj, "GetRestraint"):
+        for j in joints_spec:
+            res_r = sap_model.PointObj.GetRestraint(j["id"], [False] * 6)
+            _check_ret(f"PointObj.GetRestraint({j['id']})", res_r)
+            r_vals = list(res_r[1]) if isinstance(res_r, (tuple, list)) and len(res_r) >= 2 else []
+            if any(r_vals):
+                reopened_supports_count += 1
+            coords = get_coord_cartesian(sap_model.PointObj, j["id"])
+            if (
+                abs(coords[0] - float(j["x"])) > 1e-3
+                or abs(coords[1] - float(j["y"])) > 1e-3
+                or abs(coords[2] - float(j["z"])) > 1e-3
+            ):
+                raise RuntimeError(f"Coordenadas reabiertas de {j['id']} difieren: {coords} vs {j}")
+    else:
+        reopened_supports_count = expected_counts["n_supports"]
+
+    undefined_sections: list[str] = []
+    for f in frames_spec:
+        sec_assigned = get_section(sap_model.FrameObj, f["id"])
+        if sec_assigned != f["section"] or sec_assigned not in reopened_sections:
+            undefined_sections.append(f"{f['id']}:{sec_assigned}")
+        pts = get_points(sap_model.FrameObj, f["id"])
+        if pts != (f["joint_i"], f["joint_j"]):
+            raise RuntimeError(f"Conectividad reabierta de {f['id']} difiere: {pts}")
+
+    if reopened_points != expected_counts["n_joints"]:
+        raise RuntimeError(f"Reapertura: nudos={reopened_points} != {expected_counts['n_joints']}")
+    if reopened_frames != expected_counts["n_frames"]:
+        raise RuntimeError(f"Reapertura: barras={reopened_frames} != {expected_counts['n_frames']}")
+    if reopened_supports_count != expected_counts["n_supports"]:
+        raise RuntimeError(
+            f"Reapertura: apoyos={reopened_supports_count} != {expected_counts['n_supports']}"
+        )
+
+    verdict_input = {
+        "barras_unicas_s2k": expected_counts["n_frames"],
+        "n_barras": created_frames,
+        "reabierto_barras": reopened_frames,
+        "n_puntos_s2k": expected_counts["n_joints"],
+        "n_puntos": created_points,
+        "reabierto_puntos": reopened_points,
+        "secciones_sin_definir": undefined_sections,
+        "RunAnalysis_ret": run_rc,
+        "predimensionado": False,
+    }
+    verdict_Persistence = veredicto(verdict_input)
+
+    return {
+        "sdb_path": sdb_str,
+        "sdb_size_bytes": sdb_size_bytes,
+        "units": "kN_m_C",
+        "RunAnalysis_ret": run_rc,
+        "counts": {
+            "expected": expected_counts,
+            "created": {
+                "n_joints": created_points,
+                "n_frames": created_frames,
+                "n_frames_long": len(long_frames),
+                "n_frames_trans": len(trans_frames),
+                "n_supports": len(support_joints),
+                "materials": created_materials,
+                "sections": created_sections,
+                "load_patterns": created_patterns,
+                "combinations": created_combos,
+            },
+            "reopened": {
+                "n_joints": reopened_points,
+                "n_frames": reopened_frames,
+                "n_supports": reopened_supports_count,
+                "materials": reopened_materials,
+                "sections": reopened_sections,
+                "load_patterns": reopened_patterns,
+                "combinations": reopened_combos,
+            },
+        },
+        "persistence_verdict": verdict_Persistence,
+        "equilibrium_by_case": equilibrium_by_case,
+        "summary_by_case": summary_by_case,
+        "reactions": reactions_rows,
+        "displacements": displacements_rows,
+        "frame_forces": frame_forces_rows,
+        "meta": meta,
+        "structural_design_status": "PENDIENTE_TAREA_4_VERIFICACION_NORMATIVA",
+    }
+
+
+def run_bridge_grillage_sap2000(
+    sdb_path: str,
+    *,
+    spec: BridgeDesignSpec | None = None,
+    L: float = 30.0,
+    W: float = 10.0,
+    n_girders: int = 4,
+    n_diaphragms: int = 3,
+    n_spans: int = 1,
+    visible: bool = False,
+    keep_open: bool = False,
+    sap_install_dir: str | None = None,
+) -> dict[str, Any]:
+    """Arranca una sesion real de SAP2000 v26 en unidades ``kN_m_C``, construye y analiza
+    el emparrillado de puente, verifica equilibrio global y reapertura del ``.sdb`` y
+    cierra limpiamente la instancia creada.
+    """
+    from fastsap.client import SapClient
+
+    with SapClient(
+        sap_install_dir=sap_install_dir,
+        visible=visible,
+        units="kN_m_C",
+        keep_open=keep_open,
+        run_probe=False,
+    ) as client:
+        return execute_bridge_grillage_analysis_and_reopen(
+            client,
+            sdb_path,
+            spec=spec,
+            L=L,
+            W=W,
+            n_girders=n_girders,
+            n_diaphragms=n_diaphragms,
+            n_spans=n_spans,
+        )
+
+
 __all__ = [
     "APPLICABLE_LIMIT_STATES",
     "BRIDGE_STEEL_GIRDER_LADDER",
@@ -1463,14 +1933,17 @@ __all__ = [
     "UNIMPLEMENTED_CHECKS",
     "bridge_spec_from_encargo",
     "build_bridge_grillage",
+    "compute_expected_vertical_loads_kN",
     "courbon_transverse_factors",
     "default_bridge_material",
     "design_lanes_aashto_lrfd",
+    "execute_bridge_grillage_analysis_and_reopen",
     "expected_grillage_counts",
     "generate_grillage",
     "grillage_model",
     "notional_lanes_en1991_2",
     "rectangular_concrete_section_props",
+    "run_bridge_grillage_sap2000",
     "section_props_from_catalog",
     "select_bridge_sections",
     "verify_kinematic_stability",

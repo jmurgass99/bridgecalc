@@ -558,3 +558,121 @@ def test_cargas_puntuales_en_barras_proximas_al_apoyo_sin_condensacion_nodal():
     assert all(p[8] is False for p in pts_V)  # Replace=False
     assert sum(p[5] for p in pts_V) == pytest.approx(sum(loads["vehicle_axles_V_kN"]))
     assert sum(p[5] for p in pts_M) == pytest.approx(sum(loads["vehicle_axles_M_kN"]))
+
+
+# --------------------------------------------------------------------------- #
+# TAREA 3 — Ciclo de analisis, extraccion concurrente, equilibrio y reapertura
+# --------------------------------------------------------------------------- #
+def test_compute_expected_vertical_loads_y_equilibrio_analitico():
+    from jmworkbench.encargo import interpretar_encargo
+    from bridgejm.integration.grillage_model import (
+        bridge_spec_from_encargo,
+        build_bridge_grillage,
+        compute_expected_vertical_loads_kN,
+    )
+
+    enc = interpretar_encargo(
+        "Diseña un puente de 30 m de luz.",
+        supuestos={
+            "norma": "EN 1991-2",
+            "uso": "carretera",
+            "ancho_tablero_o_carriles": "ancho de tablero 10 m",
+            "material": "acero",
+            "apoyos": "simplemente apoyado",
+            "galibo": "gálibo de 5,5 m",
+            "acciones": "LM1",
+        },
+    )
+    spec = bridge_spec_from_encargo(enc)
+    summary = build_bridge_grillage(None, spec=spec, preview_only=True)
+    fz = compute_expected_vertical_loads_kN(summary["meta"])
+
+    # DEAD = peso propio 4 vigas HEM 1000 (30 m) + 5 lineas diafragma HEB 400 (10 m) + losa 0.25 m
+    assert fz["DEAD"] == pytest.approx(
+        fz["DEAD_self_weight_girders_kN"] + fz["DEAD_self_weight_diaphragms_kN"] + fz["DEAD_slab_kN"]
+    )
+    assert fz["DEAD_slab_kN"] == pytest.approx(4 * 30.0 * 15.625)  # 1875.0 kN
+    assert fz["DW"] == pytest.approx(4 * 30.0 * 6.25)  # 750.0 kN
+    assert fz["LIVE_LANE"] == pytest.approx(44.5 * 30.0)  # 1335.0 kN
+    assert fz["LIVE_VEHICLE_M"] == pytest.approx(1200.0)
+    assert fz["LIVE_VEHICLE_V"] == pytest.approx(1200.0)
+    assert fz["ULS_STR"] == pytest.approx(
+        1.35 * (fz["DEAD"] + fz["DW"] + fz["LIVE_LANE"] + fz["LIVE_VEHICLE_M"]), rel=1e-4
+    )
+
+
+@pytest.mark.compat
+@pytest.mark.live
+def test_bridge_grillage_30m_live_sap2000(tmp_path):
+    """Test LIVE real contra SAP2000 v26: construye el emparrillado de 30 m x 10 m,
+    guarda .sdb, ejecuta analisis estatico, verifica equilibrio global de reacciones,
+    extrae desplazamientos y esfuerzos concurrentes (P, V2, V3, T, M2, M3),
+    cierra y reabre el archivo .sdb verificando recuentos y veredicto OK.
+    """
+    from pathlib import Path
+    from jmworkbench.encargo import interpretar_encargo
+    from bridgejm.integration.grillage_model import (
+        bridge_spec_from_encargo,
+        run_bridge_grillage_sap2000,
+    )
+
+    sap_exe = Path(r"C:\Program Files\Computers and Structures\SAP2000 26\SAP2000.exe")
+    if not sap_exe.exists():
+        pytest.skip(f"SAP2000 v26 no instalado en {sap_exe}")
+
+    enc = interpretar_encargo(
+        "Diseña un puente de 30 m de luz que cumpla la normativa aplicable. "
+        "Selecciona una tipología estructural adecuada, define la geometría, "
+        "predimensiona y selecciona las secciones, establece materiales, apoyos, "
+        "cargas y combinaciones, genera el modelo en SAP2000, ejecuta el análisis, "
+        "verifica los estados límite, corrige las secciones si es necesario y "
+        "entrega el modelo en SAP2000 con sus resultados y sus planos en AutoCAD.",
+        supuestos={
+            "norma": "EN 1991-2",
+            "uso": "carretera",
+            "ancho_tablero_o_carriles": "ancho de tablero 10 m",
+            "material": "acero",
+            "apoyos": "simplemente apoyado",
+            "galibo": "gálibo de 5,5 m",
+            "acciones": "LM1",
+        },
+    )
+    spec = bridge_spec_from_encargo(enc)
+    sdb_file = tmp_path / "puente_30m_emparrillado_live.sdb"
+
+    res = run_bridge_grillage_sap2000(str(sdb_file), spec=spec, visible=False, keep_open=False)
+
+    assert Path(res["sdb_path"]).exists()
+    assert res["sdb_size_bytes"] > 1000
+    assert res["RunAnalysis_ret"] == 0
+    assert res["persistence_verdict"] == {"veredicto": "OK", "motivos": []}
+    assert res["counts"]["created"]["n_joints"] == 20
+    assert res["counts"]["reopened"]["n_joints"] == 20
+    assert res["counts"]["created"]["n_frames"] == 31
+    assert res["counts"]["reopened"]["n_frames"] == 31
+    assert res["counts"]["reopened"]["n_supports"] == 8
+
+    # Equilibrio global exacto verificado en todos los casos y combinaciones
+    for case_name, eq in res["equilibrium_by_case"].items():
+        assert eq["equilibrium_ok"] is True, f"Equilibrio fallo en {case_name}: {eq}"
+        assert eq["rel_error"] < 1e-4
+
+    # Persistir el .sdb y el reporte JSON de evidencias para inspeccion auditable
+    import json
+    import shutil
+    artifact_dir = Path(r"C:\Users\jesus\.gemini\antigravity\brain\7806a750-479b-4040-af0a-39e35ddb12b8\scratch")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(res["sdb_path"], artifact_dir / "puente_30m_emparrillado_sap2000_v26.sdb")
+    (artifact_dir / "puente_30m_emparrillado_sap2000_v26_report.json").write_text(
+        json.dumps(res, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    # La viga exterior ig=0 recibe mayor momento y cortante que la viga opuesta ig=3 bajo trafico excentrico
+    uls = res["summary_by_case"]["ULS_STR"]
+    assert uls["girder_peaks_by_index"][0]["M3_max_kNm"] > uls["girder_peaks_by_index"][3]["M3_max_kNm"]
+    assert uls["diaphragm_M3_max_kNm"] > 0.0
+    assert uls["diaphragm_V2_max_kN"] > 0.0
+    assert uls["min_Uz_mm"] < -10.0  # flecha hacia abajo (-Z)
+
+    uls_v = res["summary_by_case"]["ULS_STR_SHEAR"]
+    assert uls_v["girder_peaks_by_index"][0]["V2_max_kN"] > uls_v["girder_peaks_by_index"][3]["V2_max_kN"]
