@@ -866,7 +866,7 @@ def test_verificador_falla_seccion_insuficiente_hem1000():
     verif = verify_bridge_grillage_results(rep)
 
     assert verif["calculation_status"] == CalculationStatus.CALCULADO_FALLA
-    assert verif["implemented_checks_status"] == CalculationStatus.CALCULADO_FALLA.value
+    assert verif["implemented_checks_status"] == "FALLA"
     assert verif["max_dcr_uls"] > 2.0
     assert verif["max_dcr_sls"] > 5.0
     checks_by_id = {c["check_id"]: c for c in verif["checks"]}
@@ -961,9 +961,90 @@ def test_conservacion_salvedades_y_estado_requiere_revision_cuando_implementados
     verif = verify_bridge_grillage_results(rep_ok)
     assert verif["max_dcr_uls"] <= 1.0
     assert verif["max_dcr_sls"] <= 1.0
-    assert verif["implemented_checks_status"] == CalculationStatus.CALCULADO_CUMPLE.value
+    assert verif["implemented_checks_status"] == "CUMPLE"
     assert len(verif["unimplemented_checks"]) >= 4
     assert verif["calculation_status"] == CalculationStatus.REQUIERE_REVISION
+
+
+def test_ltb_viga_armada_pg_referencia_independiente_ec3():
+    """Auditoria Punto 1: Prueba de referencia independiente en forma cerrada para el pandeo
+    lateral-torsional (LTB) y cortante de dos secciones armadas soldadas (PG_1900x650x50x28 y
+    PG_1500x550x40x24) segun EN 1993-1-1:2005+A1:2014 §6.3.2.2 (Caso General de vigas soldadas),
+    EN 10025-2 Tabla 7 y EN 1993-1-5 §5.1-5.3.
+    """
+    import math
+    from bridgejm.integration.grillage_model import (
+        _compute_member_capacities_ec3,
+        default_bridge_material,
+        section_props_from_catalog,
+    )
+
+    mat = default_bridge_material("acero", "EN_1991_2").to_dict()
+    E_MPa = 210000.0
+    nu = 0.30
+    G_MPa = E_MPa / (2.0 * (1.0 + nu))  # 80769.230769 MPa
+    L_LT_m = 7.50  # 30.0 m / 4 divisiones entre diafragmas T0..T4
+
+    for sec_name, h_m, b_m, tf_m, tw_m, fy_eff_expected in [
+        ("PG_1900x650x50x28", 1.900, 0.650, 0.050, 0.028, 335.0),
+        ("PG_1500x550x40x24", 1.500, 0.550, 0.040, 0.024, 345.0),
+    ]:
+        sec = section_props_from_catalog(sec_name, material_name="S355").to_dict()
+        cap = _compute_member_capacities_ec3(sec, mat, L_ltb_m=L_LT_m, gamma_M0=1.00, gamma_M1=1.10)
+
+        # 1) Reduccion de limite elastico por espesor EN 10025-2 Tabla 7
+        assert cap["fy_effective_MPa"] == pytest.approx(fy_eff_expected)
+        eps_ref = math.sqrt(235.0 / fy_eff_expected)
+        assert cap["classification"]["epsilon"] == pytest.approx(eps_ref, abs=1e-5)
+
+        # 2) Propiedades geometricas exactas de seccion doble T doblemente simetrica sin acuerdo r=0
+        hw_m = h_m - 2.0 * tf_m
+        i22_ref = (2.0 * tf_m * (b_m ** 3) + hw_m * (tw_m ** 3)) / 12.0
+        j_ref = (2.0 * b_m * (tf_m ** 3) + hw_m * (tw_m ** 3)) / 3.0
+        iw_ref = i22_ref * ((h_m - tf_m) ** 2) / 4.0
+        wpl33_ref = b_m * tf_m * (h_m - tf_m) + 0.25 * tw_m * (hw_m ** 2)
+
+        assert sec["I22_m4"] == pytest.approx(i22_ref, rel=1e-4)
+        assert sec["J_m4"] == pytest.approx(j_ref, rel=1e-4)
+        assert cap["Iw_m6"] == pytest.approx(iw_ref, rel=1e-4)
+        assert cap["Wy_m3"] == pytest.approx(wpl33_ref, rel=1e-4)
+
+        # 3) Clasificacion de seccion EN 1993-1-1 Tabla 5.2 (Clase 1/2 -> usa Wpl,y)
+        cf_over_tf_ref = (0.5 * (b_m - tw_m)) / tf_m
+        cw_over_tw_ref = hw_m / tw_m
+        assert cf_over_tf_ref <= 9.0 * eps_ref  # Ala Clase 1
+        assert cw_over_tw_ref <= 83.0 * eps_ref  # Alma Clase 1 o 2
+        assert cap["classification"]["section_class"] in (1, 2)
+
+        # 4) Momento critico elastico de Timoshenko Mcr (C1 = 1.0, apoyo en horquilla en diafragmas)
+        E_Pa = E_MPa * 1e6
+        G_Pa = G_MPa * 1e6
+        k_pi_L = math.pi / L_LT_m
+        Mcr_Nm_ref = k_pi_L * math.sqrt((E_Pa * i22_ref) * (G_Pa * j_ref + (k_pi_L ** 2) * E_Pa * iw_ref))
+        Mcr_kNm_ref = Mcr_Nm_ref / 1000.0
+        assert cap["Mcr_kNm"] == pytest.approx(Mcr_kNm_ref, rel=1e-5)
+
+        # 5) Esbeltez adimensional y factor de reduccion chi_LT (§6.3.2.2 Caso General, Tabla 6.3 y 6.4)
+        #    Para seccion armada soldada con h/b > 2.0 -> curva 'd' (alpha_LT = 0.76)
+        assert (h_m / b_m) > 2.0
+        assert cap["ltb_curve"] == "d"
+        alpha_LT = 0.76
+        lam_bar_ref = math.sqrt((wpl33_ref * fy_eff_expected * 1e6) / Mcr_Nm_ref)
+        phi_lt_ref = 0.5 * (1.0 + alpha_LT * (lam_bar_ref - 0.2) + (lam_bar_ref ** 2))
+        chi_lt_ref = 1.0 / (phi_lt_ref + math.sqrt(phi_lt_ref ** 2 - lam_bar_ref ** 2))
+        Mb_Rd_kNm_ref = (chi_lt_ref * wpl33_ref * fy_eff_expected * 1000.0) / 1.10
+        Mc_Rd_kNm_ref = (wpl33_ref * fy_eff_expected * 1000.0) / 1.00
+
+        assert cap["lambda_bar_LT"] == pytest.approx(lam_bar_ref, abs=1e-4)
+        assert cap["chi_LT"] == pytest.approx(chi_lt_ref, abs=1e-4)
+        assert cap["Mb_Rd_kNm"] == pytest.approx(Mb_Rd_kNm_ref, rel=1e-4)
+        assert cap["Mc_Rd_kNm"] == pytest.approx(Mc_Rd_kNm_ref, rel=1e-4)
+
+        # 6) Cortante y abolladura del alma EN 1993-1-5 §5.1-5.3
+        eta_w = 1.20
+        hw_lim_ref = (72.0 / eta_w) * eps_ref
+        assert cap["hw_over_tw"] == pytest.approx(cw_over_tw_ref, abs=1e-3)
+        assert cap["hw_over_tw_unstiffened_limit"] == pytest.approx(hw_lim_ref, abs=1e-3)
 
 
 class _StatefulBridgeSapMock:
@@ -1279,19 +1360,22 @@ def test_bucle_redimensionamiento_actualiza_propiedades_reanaliza_y_converge(tmp
     assert mock_sap.run_count == 3
     assert mock_sap.unlock_count == 2
     assert res["termination_reason"] == "CONVERGED_ALL_IMPLEMENTED_CHECKS_PASS"
-    assert res["implemented_checks_status"] == "CALCULADO_CUMPLE"
+    assert res["implemented_checks_status"] == "CUMPLE"
     assert res["calculation_status"] == "REQUIERE_REVISION"
     assert res["persistence_verdict"] == {"veredicto": "OK", "motivos": []}
 
     # Verificar que el peso propio DEAD y la inercia I33 crecen en cada iteracion y el DCR baja
     hist = res["iterations_history"]
     assert hist[0]["girder_section"] == "HEM 1000"
-    assert hist[0]["implemented_checks_status"] == "CALCULADO_FALLA"
+    assert hist[0]["implemented_checks_status"] == "FALLA"
     assert hist[-1]["girder_section"] == "PG_1900x650x50x28"
-    assert hist[-1]["implemented_checks_status"] == "CALCULADO_CUMPLE"
+    assert hist[-1]["implemented_checks_status"] == "CUMPLE"
     assert hist[-1]["DEAD_total_kN"] > hist[0]["DEAD_total_kN"]
     assert hist[-1]["active_traffic_deflection_mm"] < hist[0]["active_traffic_deflection_mm"]
     assert hist[-1]["max_dcr_overall"] <= 1.0
+    reopened_f_secs = res["counts"]["reopened"]["frame_sections"]
+    assert all(reopened_f_secs[fid] == "PG_1900x650x50x28" for fid in reopened_f_secs if fid.startswith("L"))
+    assert all(reopened_f_secs[fid] == "HEB 400" for fid in reopened_f_secs if fid.startswith("T"))
 
 
 def test_bucle_redimensionamiento_agotamiento_catalogo_calculado_falla(tmp_path):
@@ -1337,7 +1421,7 @@ def test_bucle_redimensionamiento_agotamiento_catalogo_calculado_falla(tmp_path)
     )
 
     assert res["termination_reason"] == "CATALOG_EXHAUSTED"
-    assert res["implemented_checks_status"] == "CALCULADO_FALLA"
+    assert res["implemented_checks_status"] == "FALLA"
     assert res["calculation_status"] == "CALCULADO_FALLA"
     assert res["n_iterations"] == 2
     assert res["final_girder_section"] == "HEM 1000"
@@ -1396,23 +1480,27 @@ def test_bridge_grillage_30m_closed_loop_resize_live_sap2000(tmp_path):
     assert res["final_girder_section"].startswith("PG_")
     assert res["n_iterations"] >= 2
     assert res["termination_reason"] == "CONVERGED_ALL_IMPLEMENTED_CHECKS_PASS"
-    assert res["implemented_checks_status"] == "CALCULADO_CUMPLE"
+    assert res["implemented_checks_status"] == "CUMPLE"
     assert res["calculation_status"] == "REQUIERE_REVISION"
     assert res["persistence_verdict"] == {"veredicto": "OK", "motivos": []}
 
     # Iteracion 0 (HEM 1000) debe fallar con DCR > 1.0; iteracion final debe cumplir con DCR <= 1.0
     hist = res["iterations_history"]
     assert hist[0]["girder_section"] == "HEM 1000"
-    assert hist[0]["implemented_checks_status"] == "CALCULADO_FALLA"
+    assert hist[0]["implemented_checks_status"] == "FALLA"
     assert hist[0]["max_dcr_uls"] > 1.0
     assert hist[0]["max_dcr_sls"] > 1.0
 
     assert hist[-1]["girder_section"] == res["final_girder_section"]
-    assert hist[-1]["implemented_checks_status"] == "CALCULADO_CUMPLE"
+    assert hist[-1]["implemented_checks_status"] == "CUMPLE"
     assert hist[-1]["max_dcr_uls"] <= 1.0
     assert hist[-1]["max_dcr_sls"] <= 1.0
     assert hist[-1]["sap_section_verification"]["girder"]["verified_via_oapi"] is True
     assert hist[-1]["sap_section_verification"]["girder"]["max_rel_diff"] < 0.01
+    reopened_f_secs = res["counts"]["reopened"]["frame_sections"]
+    assert len(reopened_f_secs) == 31
+    assert all(reopened_f_secs[fid] == res["final_girder_section"] for fid in reopened_f_secs if fid.startswith("L"))
+    assert all(reopened_f_secs[fid] == "HEB 400" for fid in reopened_f_secs if fid.startswith("T"))
 
     # Equilibrio global exacto en todas las combinaciones del modelo final
     for case_name, eq in res["equilibrium_by_case"].items():

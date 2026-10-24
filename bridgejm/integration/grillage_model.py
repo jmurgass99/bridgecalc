@@ -1912,8 +1912,10 @@ def execute_bridge_grillage_analysis_and_reopen(
         reopened_supports_count = expected_counts["n_supports"]
 
     undefined_sections: list[str] = []
+    reopened_frame_sections: dict[str, str] = {}
     for f in frames_spec:
         sec_assigned = get_section(sap_model.FrameObj, f["id"])
+        reopened_frame_sections[f["id"]] = sec_assigned
         if sec_assigned != f["section"] or sec_assigned not in reopened_sections:
             undefined_sections.append(f"{f['id']}:{sec_assigned}")
         pts = get_points(sap_model.FrameObj, f["id"])
@@ -1966,6 +1968,7 @@ def execute_bridge_grillage_analysis_and_reopen(
                 "n_supports": reopened_supports_count,
                 "materials": reopened_materials,
                 "sections": reopened_sections,
+                "frame_sections": reopened_frame_sections,
                 "load_patterns": reopened_patterns,
                 "combinations": reopened_combos,
             },
@@ -2873,18 +2876,22 @@ def verify_bridge_grillage_results(
     unimplemented = list(meta.get("comprobaciones_no_implementadas", UNIMPLEMENTED_CHECKS))
 
     # Regla innegociable de honestidad:
-    # - Si cualquier estado limite implementado falla (DCR > 1.0) -> CALCULADO_FALLA.
-    # - Si todos los estados limite implementados cumplen (DCR <= 1.0), pero existen
-    #   comprobaciones obligatorias de puente no implementadas -> REQUIERE_REVISION.
+    # - Si cualquier estado limite implementado falla (DCR > 1.0) -> CALCULADO_FALLA (implemented_checks_status="FALLA").
+    # - Si todos los estados limite implementados cumplen (DCR <= 1.0), implemented_checks_status="CUMPLE",
+    #   pero si existen comprobaciones obligatorias de puente no implementadas -> calculation_status=REQUIERE_REVISION.
     # - Solo si todas las comprobaciones aplicables estuvieran implementadas y cumplieran -> CALCULADO_CUMPLE.
     if agg_implemented == CalculationStatus.CALCULADO_FALLA:
         overall_status = CalculationStatus.CALCULADO_FALLA
+        implemented_status_str = "FALLA"
     elif agg_implemented == CalculationStatus.NO_CALCULADO:
         overall_status = CalculationStatus.NO_CALCULADO
+        implemented_status_str = CalculationStatus.NO_CALCULADO.value
     elif unimplemented:
         overall_status = CalculationStatus.REQUIERE_REVISION
+        implemented_status_str = "CUMPLE"
     else:
         overall_status = agg_implemented
+        implemented_status_str = "CUMPLE"
 
     return {
         "norma": norma,
@@ -2916,7 +2923,7 @@ def verify_bridge_grillage_results(
                 f"y flecha total característica limitada a L/{int(total_deflection_ratio_limit)} ({total_limit_mm:.2f} mm)."
             ),
         },
-        "implemented_checks_status": agg_implemented.value,
+        "implemented_checks_status": implemented_status_str,
         "calculation_status": overall_status,
         "unimplemented_checks": unimplemented,
         "missing_inputs": [],
@@ -3311,7 +3318,7 @@ def execute_bridge_grillage_design_loop(
         })
 
         # Si todos los estados limite implementados cumplen (DCR <= 1.0), hemos convergido
-        if verif["implemented_checks_status"] == CalculationStatus.CALCULADO_CUMPLE.value:
+        if verif["implemented_checks_status"] in ("CUMPLE", CalculationStatus.CALCULADO_CUMPLE.value):
             termination_reason = "CONVERGED_ALL_IMPLEMENTED_CHECKS_PASS"
             break
 
@@ -3432,8 +3439,10 @@ def execute_bridge_grillage_design_loop(
         reopened_supports_count = expected_counts["n_supports"]
 
     undefined_sections: list[str] = []
+    reopened_frame_sections: dict[str, str] = {}
     for f in frames_spec:
         sec_assigned = oapi_get_section(sap_model.FrameObj, f["id"])
+        reopened_frame_sections[f["id"]] = sec_assigned
         if sec_assigned != f["section"] or sec_assigned not in reopened_sections:
             undefined_sections.append(f"{f['id']}:{sec_assigned}")
         pts = get_points(sap_model.FrameObj, f["id"])
@@ -3496,6 +3505,7 @@ def execute_bridge_grillage_design_loop(
                 "n_supports": reopened_supports_count,
                 "materials": reopened_materials,
                 "sections": reopened_sections,
+                "frame_sections": reopened_frame_sections,
                 "load_patterns": reopened_patterns,
                 "combinations": reopened_combos,
             },
