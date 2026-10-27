@@ -2528,8 +2528,11 @@ def _evaluate_concurrent_station_row(
         dcr_mv_ltb = dcr_ltb
         dcr_en1993_1_5_eq71 = dcr_flex_sec
 
-    # Interaccion completa M3 + V2 + N + M2 concurrentes (EN 1993-1-1 §6.2.9 / §6.3.3 / AASHTO §6.8.2.3)
-    dcr_mvn_concurrent = max(dcr_mv_sec, dcr_mv_ltb, dcr_en1993_1_5_eq71) + dcr_axial + 0.5 * dcr_m2
+    # Interaccion M3 + V2 + N + M2 concurrentes. El momento del eje debil entra con coeficiente 1:
+    # criterio lineal de EN 1993-1-1 §6.2.1(7) ec. (6.2) (N/N_Rd + My/My,Rd + Mz/Mz,Rd <= 1) y
+    # AASHTO LRFD §6.8.2.3 / §6.9.2.2 (Mux/Mrx + Muy/Mry). Antes 0.5*dcr_m2, sin fuente normativa,
+    # que rebajaba a la mitad la contribucion de M2.
+    dcr_mvn_concurrent = max(dcr_mv_sec, dcr_mv_ltb, dcr_en1993_1_5_eq71) + dcr_axial + dcr_m2
 
     checks_at_station = {
         "ELU_FLEXION_SECCION": round(dcr_flex_sec, 6),
@@ -3813,8 +3816,22 @@ def evaluate_bridge_design_alternatives(
     (variando número de vigas principales ``n_girders`` y secciones de catálogo laminadas/armadas)
     bajo funciones objetivo de masa, coste, carbono embebido, constructibilidad y holgura estructural
     (DCR ULS y SLS), determina la frontera de Pareto no dominada y clasifica la solución seleccionada
-    como ``MEJOR_SOLUCION_ENCONTRADA`` o ``SOLUCION_FACTIBLE``.
+    como ``MEJOR_SOLUCION_ENCONTRADA`` o ``SOLUCION_FACTIBLE`` (solo si la alternativa seleccionada
+    esta verificada en SAP2000), ``ESTIMACION_NO_VERIFICADA`` (seleccion factible solo por la
+    estimacion de viga aislada), ``SIN_SOLUCION_FACTIBLE`` o ``NO_CALCULADO`` (material no acero:
+    los perfiles del catalogo y las resistencias EN 1993 / AASHTO §6 no aplican).
     """
+    if str(spec.material.material_type).lower() != "steel":
+        motivo = (f"optimizacion multiobjetivo no implementada para {spec.material.material_type} "
+                  f"({spec.material.name}): el catalogo de alternativas y las resistencias son de acero")
+        return {
+            "objectives": [], "weights": {},
+            "total_alternatives_evaluated": 0, "feasible_alternatives_count": 0,
+            "verified_alternatives_count": 0, "pareto_frontier_ids": [],
+            "optimization_classification": "NO_CALCULADO", "motivo": motivo,
+            "selected_alternative": None, "best_for_adopted_topology": None,
+            "best_across_all_topologies": None, "top_feasible_ranking": [], "all_alternatives": [],
+        }
     L = float(spec.span_m)
     W = float(spec.width_m)
     n_spans = int(spec.n_spans)
@@ -3908,14 +3925,20 @@ def evaluate_bridge_design_alternatives(
                 M_dw = q_dw * L**2 / 8.0
                 M_lane = q_lane_g0 * L**2 / 8.0
                 if spec.norma != "AASHTO_LRFD":
-                    gamma_G = 1.35
+                    # EN 1990 Anejo A2, Tabla A2.4(B): gamma_G,sup = 1.35 para todo el permanente
+                    gamma_DC = 1.35
+                    gamma_DW = 1.35
                     gamma_Q = 1.35
                 else:
-                    gamma_G = 1.25
+                    # AASHTO LRFD Tabla 3.4.1-2 (Strength I, maximos): DC 1.25, DW 1.50; LL 1.75.
+                    # Antes DW llevaba 1.25 (el de DC): la carga de pavimento quedaba un 17 % corta.
+                    gamma_DC = 1.25
+                    gamma_DW = 1.50
                     gamma_Q = 1.75
-                M_ed = gamma_G * (M_dead + M_dw) + gamma_Q * (M_lane + M_veh_g0)
+                M_ed = gamma_DC * M_dead + gamma_DW * M_dw + gamma_Q * (M_lane + M_veh_g0)
                 V_ed = (
-                    gamma_G * (q_dead + q_dw) * L / 2.0
+                    gamma_DC * q_dead * L / 2.0
+                    + gamma_DW * q_dw * L / 2.0
                     + gamma_Q * (q_lane_g0 * L / 2.0 + V_veh_g0)
                 )
                 m_ed_estimado = M_ed
@@ -4044,9 +4067,14 @@ def evaluate_bridge_design_alternatives(
             best_for_adopted_ng is not None
             and selected_alt["alternative_id"] == best_for_adopted_ng["alternative_id"]
         )
-        optimization_classification = (
-            "MEJOR_SOLUCION_ENCONTRADA" if (selected_alt.get("pareto_optimal") or is_min_mass_for_ng) else "SOLUCION_FACTIBLE"
-        )
+        if not selected_alt.get("verificada_sap2000"):
+            # Una estimacion de viga aislada no es una solucion verificada: no puede ser "la mejor"
+            # ni siquiera "factible" sin el analisis FEM de esa alternativa.
+            optimization_classification = "ESTIMACION_NO_VERIFICADA"
+        else:
+            optimization_classification = (
+                "MEJOR_SOLUCION_ENCONTRADA" if (selected_alt.get("pareto_optimal") or is_min_mass_for_ng) else "SOLUCION_FACTIBLE"
+            )
     else:
         optimization_classification = "SIN_SOLUCION_FACTIBLE"
 
@@ -4067,6 +4095,7 @@ def evaluate_bridge_design_alternatives(
         },
         "total_alternatives_evaluated": len(alternatives),
         "feasible_alternatives_count": len(feasible_alts),
+        "verified_alternatives_count": sum(1 for a in alternatives if a.get("verificada_sap2000")),
         "pareto_frontier_ids": pareto_ids,
         "optimization_classification": optimization_classification,
         "selected_alternative": selected_alt,
