@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import math
+import os
 import re
 from typing import Any
 
@@ -129,6 +130,12 @@ class MaterialSpec:
     fu_MPa: float               # Tension de rotura fu (acero) o fcd/fctm ref en MPa
     norm_ref: str
     source: str
+    units: dict[str, str] = field(default_factory=lambda: {
+        "E": "kPa",
+        "gamma": "kN/m3",
+        "fy": "MPa",
+        "fu": "MPa",
+    })
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -517,6 +524,25 @@ def bridge_spec_from_encargo(encargo: Any) -> BridgeDesignSpec:
     galibo_raw = _val("galibo")
     acciones_raw = _val("acciones")
 
+    # El uso decide el modelo de cargas. Solo existe el de CARRETERA (LM1 / HL-93): un puente
+    # ferroviario sin LM71/SW (EN 1991-2 §6) quedaria del lado inseguro y uno peatonal recibiria
+    # camiones en vez de la carga de peatones (§5). Antes `uso` no intervenia (2026-10-25).
+    # Sin tildes y por PALABRA: 'peatón' / 'vía férrea' / 'tranvía' pasaban con cargas de carretera y
+    # 'metro' casaba con 'metros' (revision 2026-10-25).
+    # Y como LISTA DE PERMITIDOS: una lista de prohibidos dejaba pasar 'ferrocarril', 'railroad' o
+    # 'footbridge'. Se calcula solo si el uso NOMBRA trafico de carretera y no nombra otro a la vez.
+    import unicodedata
+    uso_low = "".join(ch for ch in unicodedata.normalize("NFKD", uso_raw.lower()) if not unicodedata.combining(ch))
+    carretera = (r"\bcarretera\w*", r"\bvehicular\w*", r"\btrafico rodado\b", r"\bautovia\w*", r"\bautopista\w*",
+                 r"\bvial(es)?\b", r"\bcalle\w*", r"\bavenida\w*", r"\broad\w*", r"\bhighway\w*", r"\bmotorway\w*")
+    sin_modelo = (r"\bferrovi\w*", r"\bferrocarril\w*", r"\bferre[ao]s?\b", r"\btren(es)?\b", r"\btranvia\w*",
+                  r"\brail\w*", r"\bmetro\b", r"\bpeaton\w*", r"\bpedestrian\w*", r"\bfoot\w*", r"\bpasarela\w*",
+                  r"\bciclist\w*", r"\bbici\w*")
+    if not any(re.search(p, uso_low) for p in carretera) or any(re.search(p, uso_low) for p in sin_modelo):
+        raise ValueError(
+            f"uso={uso_raw!r}: el modelo de cargas de ese uso no esta implementado (solo trafico de "
+            "carretera LM1 / HL-93); calcularlo con cargas de carretera seria incorrecto")
+
     if any(k in norma_raw.upper() or k in acciones_raw.upper() for k in ("AASHTO", "HL-93", "HL93", "CCP", "NSR")):
         norma_code = "AASHTO_LRFD"
     else:
@@ -538,7 +564,9 @@ def bridge_spec_from_encargo(encargo: Any) -> BridgeDesignSpec:
         raise ValueError(f"No se pudo extraer ancho o carriles de {ancho_raw!r}")
 
     m_galibo = re.search(r"(\d+(?:[.,]\d+)?)", galibo_raw)
-    galibo_m = float(m_galibo.group(1).replace(",", ".")) if m_galibo else 5.0
+    if not m_galibo:
+        raise ValueError(f"galibo={galibo_raw!r}: no contiene un valor numerico (antes pasaba a 5.0 m en silencio)")
+    galibo_m = float(m_galibo.group(1).replace(",", "."))
 
     m_vanos = re.search(r"(\d+)\s*vanos", apoyos_raw, re.I)
     n_spans = int(m_vanos.group(1)) if m_vanos else 1
@@ -548,6 +576,14 @@ def bridge_spec_from_encargo(encargo: Any) -> BridgeDesignSpec:
 
     mat = default_bridge_material(material_raw, norma_code)
     girder_sec, diaph_sec, trace = select_bridge_sections(span_m, mat)
+    trace = {**trace, "supuestos_del_flujo": [
+        "espesor de losa = 0.25 m (fijado por el flujo, no por el encargo)",
+        "pavimento (carga muerta sobreimpuesta) = 2.0 kPa (fijado por el flujo)",
+        "barreras/pretiles = 5.0 kN/m en total (fijado por el flujo)",
+        f"numero de vigas = {n_girders} = round(ancho/2.5) acotado a [3, 8] (criterio del flujo)",
+        f"numero de diafragmas interiores = {n_diaphragms} = round(luz/7.5) - 1 (criterio del flujo)",
+        f"material {mat.name} por defecto para material={material_raw!r} (default_bridge_material)",
+    ]}
 
     return BridgeDesignSpec(
         span_m=span_m,
@@ -1720,7 +1756,7 @@ def execute_bridge_grillage_analysis_and_reopen(
     # 3) Guardar el archivo .sdb
     p_sdb = Path(sdb_path).expanduser().resolve()
     p_sdb.parent.mkdir(parents=True, exist_ok=True)
-    sdb_str = str(p_sdb).replace("/", "\\")
+    sdb_str = str(p_sdb).replace("/", "\\") if os.name == "nt" else str(p_sdb)
     if hasattr(client, "save"):
         client.save(sdb_str)
     else:
@@ -2121,9 +2157,26 @@ def _compute_member_capacities_ec3(
         wy_m3 = wel33
         wz_m3 = wel22
     else:
-        # Si apareciera Clase 4, reduccion conservadora del alma eficaz
-        wy_m3 = 0.85 * wel33
-        wz_m3 = 0.85 * wel22
+        # Clase 4 exige la seccion eficaz de EN 1993-1-5 §4, que NO esta implementada. Antes se
+        # usaba `0.85 * Wel`, un coeficiente sin respaldo normativo (2026-10-25). Sin seccion eficaz
+        # no hay resistencia: se devuelve la clasificacion y la marca, y el verificador lo trata
+        # como NO_CALCULADO.
+        return {
+            "norma_aplicada": "EN 1993-1-1:2005+A1:2014 + EN 1993-2:2006 + EN 1993-1-5:2006",
+            "fy_nominal_MPa": fy_nom_MPa,
+            "fy_effective_MPa": fy_eff_MPa,
+            "gamma_M0": gamma_M0,
+            "gamma_M1": gamma_M1,
+            "classification": cls_info,
+            "class4_effective_section_not_implemented": True,
+            "Wy_m3": None, "Wz_m3": None, "Iw_m6": round(iw, 10),
+            "Mc_Rd_kNm": None, "Mpl_Rd_kNm": None, "Mel_Rd_kNm": None, "Mf_Rd_kNm": None,
+            "Mcz_Rd_kNm": None, "Npl_Rd_kN": None, "L_LT_m": round(L_ltb_m, 4), "Mcr_kNm": None,
+            "lambda_bar_LT": None, "ltb_curve": None, "chi_LT": None, "Mb_Rd_kNm": None,
+            "Vpl_Rd_kN": None, "Vb_Rd_kN": None, "Vc_Rd_kN": None,
+            "hw_over_tw": None, "hw_over_tw_unstiffened_limit": None, "lambda_w": None, "chi_w": None,
+            "shear_buckling_active": None,
+        }
 
     # Resistencia de seccion a flexion Mc,Rd (kN*m) y axil Npl,Rd (kN)
     # Nota: Wy (m^3) * fy (MPa = 1000 kN/m^2) -> kN*m
@@ -2575,6 +2628,22 @@ def verify_bridge_grillage_results(
     meta = analysis_report["meta"]
     mat = meta["material"]
     sections = meta["sections"]
+    # Las resistencias de abajo son de ACERO (EN 1993 / AASHTO §6.10). Una viga de hormigon
+    # (seccion RECT, fy_MPa = fck, sin armadura) no se puede verificar con ellas (2026-10-25).
+    if str(mat.get("material_type", "steel")).lower() != "steel":
+        motivo = (f"verificacion de {mat.get('material_type')} ({mat.get('name')}) no implementada: "
+                  "las vigas de hormigon requieren EN 1992-2 / AASHTO LRFD §5 con armadura, "
+                  "no las resistencias de acero de este verificador")
+        return {
+            "calculation_status": CalculationStatus.NO_CALCULADO,
+            "implemented_checks_status": CalculationStatus.NO_CALCULADO.value,
+            "missing_inputs": [motivo],
+            "max_dcr_uls": None,
+            "max_dcr_sls": None,
+            "max_dcr_overall": None,
+            "checks": [],
+            "unimplemented_checks": list(UNIMPLEMENTED_CHECKS),
+        }
     span_m = float(meta["span_length"])
     width_m = float(meta["width_m"])
     n_girders = int(meta["n_girders"])
@@ -2621,6 +2690,22 @@ def verify_bridge_grillage_results(
         )
         uls_combos = ["ULS_STR", "ULS_STR_SHEAR"]
         sls_total_combo = "SLS_CHARACTERISTIC"
+
+    clase4 = [f"{rol} {nom}" for rol, nom, cap in (("viga", girder_sec_name, girder_cap),
+                                                    ("diafragma", diaph_sec_name, diaph_cap))
+              if cap.get("class4_effective_section_not_implemented")]
+    if clase4:
+        return {
+            "calculation_status": CalculationStatus.NO_CALCULADO,
+            "implemented_checks_status": CalculationStatus.NO_CALCULADO.value,
+            "missing_inputs": [f"seccion clase 4 ({', '.join(clase4)}): la seccion eficaz de "
+                               "EN 1993-1-5 §4 no esta implementada"],
+            "max_dcr_uls": None,
+            "max_dcr_sls": None,
+            "max_dcr_overall": None,
+            "checks": [],
+            "unimplemented_checks": list(UNIMPLEMENTED_CHECKS),
+        }
 
     # Filtrar filas ULS de vigas longitudinales (L*) y diafragmas (T*)
     girder_uls_rows = [
@@ -3219,7 +3304,7 @@ def execute_bridge_grillage_design_loop(
 
     p_sdb = Path(sdb_path).expanduser().resolve()
     p_sdb.parent.mkdir(parents=True, exist_ok=True)
-    sdb_str = str(p_sdb).replace("/", "\\")
+    sdb_str = str(p_sdb).replace("/", "\\") if os.name == "nt" else str(p_sdb)
 
     mat_name = str(meta["material"]["name"])
     girder_ladder = list(candidate_girder_ladder)
@@ -3265,6 +3350,23 @@ def execute_bridge_grillage_design_loop(
             total_deflection_ratio_limit=total_deflection_ratio_limit,
         )
         last_verification = verif
+
+        # NO_CALCULADO (analisis invalido, tablas vacias, equilibrio, material no soportado): la
+        # respuesta no trae governing_check/girder_capacities/sls_deflections. Se mira ANTES de
+        # leerlos; antes esta rama era inalcanzable y el bucle moria con KeyError (2026-10-25).
+        if verif["implemented_checks_status"] == CalculationStatus.NO_CALCULADO.value:
+            iterations_history.append({
+                "iteration": it_idx,
+                "girder_section": curr_girder_name,
+                "diaphragm_section": curr_diaph_name,
+                "sap_section_verification": {"girder": sap_girder_check, "diaphragm": sap_diaph_check},
+                "missing_inputs": list(verif.get("missing_inputs", [])),
+                "checks": [],
+                "implemented_checks_status": verif["implemented_checks_status"],
+                "calculation_status": verif["calculation_status"].value,
+            })
+            termination_reason = "INVALID_ANALYSIS_OR_MISSING_RESULTS"
+            break
 
         gov_chk = verif["governing_check"]
         gov_uls_st = verif["governing_girder_uls_station"]
@@ -3320,10 +3422,6 @@ def execute_bridge_grillage_design_loop(
         # Si todos los estados limite implementados cumplen (DCR <= 1.0), hemos convergido
         if verif["implemented_checks_status"] in ("CUMPLE", CalculationStatus.CALCULADO_CUMPLE.value):
             termination_reason = "CONVERGED_ALL_IMPLEMENTED_CHECKS_PASS"
-            break
-
-        if verif["implemented_checks_status"] == CalculationStatus.NO_CALCULADO.value:
-            termination_reason = "INVALID_ANALYSIS_OR_MISSING_RESULTS"
             break
 
         # Determinar si es necesario subir viga principal L* y/o diafragma T*
@@ -3761,9 +3859,10 @@ def evaluate_bridge_design_alternatives(
             M_veh_g0 += m_at_mid
         V_veh_g0 = sum(p_kN * (L - x_p) / L for p_kN, x_p in zip(axles_V, pos_V))
 
-        # Factor de redistribución transversal de los diafragmas HEB 400 (calibrado con el emparrillado 3D)
-        grillage_relief_M = 0.72
-        grillage_relief_defl = 0.565
+        # SIN factor de alivio adicional (2026-10-25). Antes se multiplicaban demandas x0.72 y
+        # flechas x0.565 "calibrados con el emparrillado 3D" para cualquier luz/vigas/seccion; las
+        # cargas por viga ya llevan el reparto transversal (Courbon / share_g0), asi que aquello
+        # contaba dos veces el mismo efecto, del lado inseguro. La estimacion es de viga aislada.
 
         for sec_name in candidate_sections:
             sec_p = section_props_from_catalog(sec_name, material_name=mat_name)
@@ -3780,12 +3879,19 @@ def evaluate_bridge_design_alternatives(
                     spec.material.to_dict(),
                     L_ltb_m=l_ltb,
                 )
-            if (ng, sec_name) in fem_iter_lookup:
+            m_ed_estimado = None
+            if cap.get("class4_effective_section_not_implemented"):
+                # sin seccion eficaz (EN 1993-1-5 §4) no hay resistencia: fuera de la optimizacion
+                dcr_uls = dcr_sls = defl_ll_mm = defl_tot_mm = None
+                verificada = False
+                eval_source = "NO_CALCULADO: seccion clase 4 (seccion eficaz EN 1993-1-5 no implementada)"
+            elif (ng, sec_name) in fem_iter_lookup and fem_iter_lookup[(ng, sec_name)].get("max_dcr_uls") is not None:
                 it_fem = fem_iter_lookup[(ng, sec_name)]
                 dcr_uls = float(it_fem["max_dcr_uls"])
                 dcr_sls = float(it_fem["max_dcr_sls"])
                 defl_ll_mm = float(it_fem["active_traffic_deflection_mm"])
                 defl_tot_mm = float(it_fem["total_characteristic_deflection_mm"])
+                verificada = True
                 eval_source = "SAP2000_FEM_3D_EXACTO"
             else:
                 q_sw = float(sec_p.A_m2) * float(spec.material.gamma_kN_m3)
@@ -3795,11 +3901,12 @@ def evaluate_bridge_design_alternatives(
                 M_lane = q_lane_g0 * L**2 / 8.0
                 gamma_G = 1.35 if spec.norma != "AASHTO_LRFD" else 1.25
                 gamma_Q = 1.35 if spec.norma != "AASHTO_LRFD" else 1.75
-                M_ed = (gamma_G * (M_dead + M_dw) + gamma_Q * (M_lane + M_veh_g0)) * grillage_relief_M
+                M_ed = gamma_G * (M_dead + M_dw) + gamma_Q * (M_lane + M_veh_g0)
                 V_ed = (
                     gamma_G * (q_dead + q_dw) * L / 2.0
                     + gamma_Q * (q_lane_g0 * L / 2.0 + V_veh_g0)
-                ) * grillage_relief_M
+                )
+                m_ed_estimado = M_ed
                 dcr_ltb = M_ed / max(1e-6, float(cap["Mb_Rd_kNm"]))
                 dcr_v = V_ed / max(1e-6, float(cap["Vc_Rd_kN"]))
                 dcr_uls = max(dcr_ltb, dcr_v)
@@ -3808,15 +3915,17 @@ def evaluate_bridge_design_alternatives(
                 defl_lane_m = (5.0 * (q_lane_g0 * 1000.0) * L**4) / (384.0 * EI)
                 P_tot_N = sum(axles_M) * 1000.0
                 defl_veh_m = (P_tot_N * L**3) / (48.0 * EI)
-                defl_ll_mm = (defl_lane_m + defl_veh_m) * grillage_relief_defl * 1000.0
+                defl_ll_mm = (defl_lane_m + defl_veh_m) * 1000.0
                 defl_dead_m = (5.0 * ((q_dead + q_dw) * 1000.0) * L**4) / (384.0 * EI)
                 defl_tot_mm = (defl_dead_m * 1000.0) + defl_ll_mm
                 lim_ll_mm = (L * 1000.0) / float(live_deflection_ratio_limit)
                 lim_tot_mm = (L * 1000.0) / float(total_deflection_ratio_limit)
                 dcr_sls = max(defl_ll_mm / lim_ll_mm, defl_tot_mm / lim_tot_mm)
-                eval_source = "GRILLAGE_COUPLED_MODEL"
+                verificada = False
+                eval_source = ("ESTIMACION_VIGA_AISLADA_COURBON (NO VERIFICADA en SAP2000; "
+                               "isostatica, sin reparto adicional por diafragmas)")
 
-            is_feas = (dcr_uls <= 1.0) and (dcr_sls <= 1.0)
+            is_feas = dcr_uls is not None and dcr_sls is not None and dcr_uls <= 1.0 and dcr_sls <= 1.0
             metrics = compute_bridge_sustainability_and_cost(
                 L=L,
                 W=W,
@@ -3831,8 +3940,10 @@ def evaluate_bridge_design_alternatives(
                 max_dcr_sls=dcr_sls,
                 feasible=is_feas,
             )
-            metrics["active_traffic_deflection_mm"] = round(defl_ll_mm, 3)
-            metrics["total_characteristic_deflection_mm"] = round(defl_tot_mm, 3)
+            metrics["active_traffic_deflection_mm"] = round(defl_ll_mm, 3) if defl_ll_mm is not None else None
+            metrics["total_characteristic_deflection_mm"] = round(defl_tot_mm, 3) if defl_tot_mm is not None else None
+            metrics["M_Ed_estimado_kNm"] = m_ed_estimado
+            metrics["verificada_sap2000"] = verificada
             metrics["evaluation_source"] = eval_source
             metrics["alternative_id"] = f"ALT_{ng}G_{sec_name.replace(' ', '')}"
             alternatives.append(metrics)

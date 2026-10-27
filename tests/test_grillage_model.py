@@ -1186,15 +1186,20 @@ class _StatefulBridgeSapMock:
 
         class _File:
             def Save(self, path):
-                Path(path).write_bytes(b"SAP2000_MOCK_SDB_BINARY_HEADER" * 40)
-                mock.saved_paths.append(path)
+                import os
+                p = Path(str(path).replace("\\", "/")) if os.name != "nt" else Path(path)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(b"SAP2000_MOCK_SDB_BINARY_HEADER" * 40)
+                mock.saved_paths.append(str(p))
                 return 0
 
             def NewBlank(self):
                 return 0
 
             def OpenFile(self, path):
-                return 0 if Path(path).exists() else 1
+                import os
+                p = Path(str(path).replace("\\", "/")) if os.name != "nt" else Path(path)
+                return 0 if p.exists() else 1
 
         class _Analyze:
             def SetRunCaseFlag(self, name, flag, all_flag=True):
