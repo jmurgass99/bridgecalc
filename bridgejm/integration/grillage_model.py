@@ -2499,7 +2499,12 @@ def _evaluate_concurrent_station_row(
     dcr_ltb = M3_Ed / Mb_Rd if Mb_Rd > 0 else float("inf")
     dcr_shear = V2_Ed / Vc_Rd if Vc_Rd > 0 else float("inf")
     dcr_axial = P_Ed / Npl_Rd if Npl_Rd > 0 else float("inf")
-    dcr_m2 = M2_Ed / Mcz_Rd if Mcz_Rd > 0 else 0.0
+    if Mcz_Rd > 0:
+        dcr_m2 = M2_Ed / Mcz_Rd
+    elif M2_Ed == 0.0:
+        dcr_m2 = 0.0
+    else:
+        dcr_m2 = float("inf")
 
     # Interaccion concurrente M-V-N en la MISMA estacion y combinacion
     if dcr_shear > 0.5:
@@ -3710,7 +3715,10 @@ def compute_bridge_sustainability_and_cost(
 
     c_info = get_cost(country_iso)
     # Vigas armadas soldadas PG_* tienen sobrecoste de fabricación por soldadura de alma-ala (~12%)
-    welded_factor = 1.12 if girder_section.upper().startswith("PG_") else 1.00
+    if girder_section.upper().startswith("PG_"):
+        welded_factor = 1.12
+    else:
+        welded_factor = 1.00
     girder_cost_usd = estimate_cost(country_iso, girder_mass_kg / 1000.0, stage="erected") * welded_factor
     diaph_cost_usd = estimate_cost(country_iso, diaph_mass_kg / 1000.0, stage="erected")
     total_cost_usd = girder_cost_usd + diaph_cost_usd
@@ -3899,8 +3907,12 @@ def evaluate_bridge_design_alternatives(
                 M_dead = q_dead * L**2 / 8.0
                 M_dw = q_dw * L**2 / 8.0
                 M_lane = q_lane_g0 * L**2 / 8.0
-                gamma_G = 1.35 if spec.norma != "AASHTO_LRFD" else 1.25
-                gamma_Q = 1.35 if spec.norma != "AASHTO_LRFD" else 1.75
+                if spec.norma != "AASHTO_LRFD":
+                    gamma_G = 1.35
+                    gamma_Q = 1.35
+                else:
+                    gamma_G = 1.25
+                    gamma_Q = 1.75
                 M_ed = gamma_G * (M_dead + M_dw) + gamma_Q * (M_lane + M_veh_g0)
                 V_ed = (
                     gamma_G * (q_dead + q_dw) * L / 2.0
