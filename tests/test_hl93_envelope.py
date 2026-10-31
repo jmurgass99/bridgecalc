@@ -16,7 +16,7 @@ con IM=33 % aplicado SOLO al vehiculo (LRFD 3.6.1.3 / 3.6.2):
 """
 import pytest
 
-from bridgejm.loads.hl93 import hl93_envelope
+from bridgecalc.loads.hl93 import hl93_envelope
 
 
 def test_hl93_envelope_L30_momento_ancla_aashto():

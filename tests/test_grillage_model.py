@@ -11,9 +11,11 @@ Verifica:
    posiciones pesimas de M+ y Vmax), combinaciones normativas y declaracion
    explicita de limitaciones del modelo y estados limite no implementados.
 """
+import pytest as _pytest_skip
+_pytest_skip.importorskip("fastsap")  # dependencia externa opcional: sin ella estos tests se omiten
 import pytest
 
-from bridgejm.integration.grillage_model import (
+from bridgecalc.integration.grillage_model import (
     build_bridge_grillage,
     generate_grillage,
     grillage_model,
@@ -265,7 +267,7 @@ def test_build_acepta_sapmodel_directo():
     ],
 )
 def test_oapi_ret_nonzero_lanza_excepcion(fail_op: str):
-    from bridgejm.integration.grillage_model import OAPICallError
+    from bridgecalc.integration.grillage_model import OAPICallError
 
     sap = _RecordingSapModel(fail_on=fail_op)
     with pytest.raises(OAPICallError, match=fail_op):
@@ -284,7 +286,7 @@ def test_oapi_ret_nonzero_lanza_excepcion(fail_op: str):
 def test_recuentos_derivados_de_especificacion_parametrica(
     n_spans, n_girders, n_diaphragms, exp_joints, exp_long, exp_trans, exp_supports
 ):
-    from bridgejm.integration.grillage_model import expected_grillage_counts
+    from bridgecalc.integration.grillage_model import expected_grillage_counts
 
     counts = expected_grillage_counts(
         n_spans=n_spans, n_girders=n_girders, n_diaphragms=n_diaphragms
@@ -308,7 +310,7 @@ def test_recuentos_derivados_de_especificacion_parametrica(
 
 
 def test_estabilidad_cinematica_3d_apoyos_y_dilatacion_libre():
-    from bridgejm.integration.grillage_model import verify_kinematic_stability
+    from bridgecalc.integration.grillage_model import verify_kinematic_stability
 
     g = grillage_model(L=30.0, W=10.0, n_girders=4, n_diaphragms=3)
     report = verify_kinematic_stability(g["joints"])
@@ -348,7 +350,7 @@ def test_estabilidad_cinematica_3d_apoyos_y_dilatacion_libre():
 
 def test_encargo_puente_30m_genera_especificacion_material_secciones_cargas_y_limitaciones():
     from jmworkbench.encargo import interpretar_encargo
-    from bridgejm.integration.grillage_model import (
+    from bridgecalc.integration.grillage_model import (
         bridge_spec_from_encargo,
         build_bridge_grillage,
     )
@@ -424,7 +426,7 @@ def test_encargo_puente_30m_genera_especificacion_material_secciones_cargas_y_li
 
 def test_encargo_puente_30m_aashto_hl93():
     from jmworkbench.encargo import interpretar_encargo
-    from bridgejm.integration.grillage_model import (
+    from bridgecalc.integration.grillage_model import (
         bridge_spec_from_encargo,
         build_bridge_grillage,
     )
@@ -454,7 +456,7 @@ def test_encargo_puente_30m_aashto_hl93():
 # --------------------------------------------------------------------------- #
 def test_lm1_10m_tres_carriles_nocionales_y_area_remanente():
     from jmworkbench.encargo import interpretar_encargo
-    from bridgejm.integration.grillage_model import (
+    from bridgecalc.integration.grillage_model import (
         bridge_spec_from_encargo,
         build_bridge_grillage,
         notional_lanes_en1991_2,
@@ -496,7 +498,7 @@ def test_lm1_10m_tres_carriles_nocionales_y_area_remanente():
 
 
 def test_distribucion_transversal_excentrica_courbon():
-    from bridgejm.integration.grillage_model import (
+    from bridgecalc.integration.grillage_model import (
         build_bridge_grillage,
         courbon_transverse_factors,
     )
@@ -522,7 +524,7 @@ def test_distribucion_transversal_excentrica_courbon():
 
 def test_cargas_puntuales_en_barras_proximas_al_apoyo_sin_condensacion_nodal():
     from jmworkbench.encargo import interpretar_encargo
-    from bridgejm.integration.grillage_model import (
+    from bridgecalc.integration.grillage_model import (
         bridge_spec_from_encargo,
         build_bridge_grillage,
     )
@@ -565,7 +567,7 @@ def test_cargas_puntuales_en_barras_proximas_al_apoyo_sin_condensacion_nodal():
 # --------------------------------------------------------------------------- #
 def test_compute_expected_vertical_loads_y_equilibrio_analitico():
     from jmworkbench.encargo import interpretar_encargo
-    from bridgejm.integration.grillage_model import (
+    from bridgecalc.integration.grillage_model import (
         bridge_spec_from_encargo,
         build_bridge_grillage,
         compute_expected_vertical_loads_kN,
@@ -611,7 +613,7 @@ def test_bridge_grillage_30m_live_sap2000(tmp_path):
     """
     from pathlib import Path
     from jmworkbench.encargo import interpretar_encargo
-    from bridgejm.integration.grillage_model import (
+    from bridgecalc.integration.grillage_model import (
         bridge_spec_from_encargo,
         run_bridge_grillage_sap2000,
     )
@@ -699,7 +701,7 @@ def _make_synthetic_analysis_report(
     equilibrium_ok: bool = True,
 ) -> dict:
     from jmworkbench.encargo import interpretar_encargo
-    from bridgejm.integration.grillage_model import (
+    from bridgecalc.integration.grillage_model import (
         bridge_spec_from_encargo,
         build_bridge_grillage,
         compute_expected_vertical_loads_kN,
@@ -859,8 +861,8 @@ def test_verificador_falla_seccion_insuficiente_hem1000():
     incumple tanto ULS (flexión y LTB) como SLS (flecha activa y total), devolviendo
     CalculationStatus.CALCULADO_FALLA.
     """
-    from jmstructural_common.audit_status import CalculationStatus
-    from bridgejm.integration.grillage_model import verify_bridge_grillage_results
+    from bridgecalc._common.audit_status import CalculationStatus
+    from bridgecalc.integration.grillage_model import verify_bridge_grillage_results
 
     rep = _make_synthetic_analysis_report(girder_section="HEM 1000")
     verif = verify_bridge_grillage_results(rep)
@@ -882,7 +884,7 @@ def test_verificador_interaccion_concurrente_m_v_n_misma_estacion():
     - Cuando en la MISMA estación concurren M3 elevado y V2 > 0.5 * Vc,Rd, rho > 0 reduce Mc,Rd y Mb,Rd
       incrementando el DCR de interacción concurrente M-V-N.
     """
-    from bridgejm.integration.grillage_model import verify_bridge_grillage_results
+    from bridgecalc.integration.grillage_model import verify_bridge_grillage_results
 
     # Caso A: M3=3500 kN*m en centro de vano con V2 concurrente bajo (10 kN), aunque en el apoyo V2=1800 kN
     rep_low_v_concurrent = _make_synthetic_analysis_report(
@@ -916,8 +918,8 @@ def test_verificador_interaccion_concurrente_m_v_n_misma_estacion():
 
 def test_verificador_analisis_invalido_o_resultados_incompletos_no_calculado():
     """5. Análisis inválido o resultados incompletos producen CalculationStatus.NO_CALCULADO."""
-    from jmstructural_common.audit_status import CalculationStatus
-    from bridgejm.integration.grillage_model import verify_bridge_grillage_results
+    from bridgecalc._common.audit_status import CalculationStatus
+    from bridgecalc.integration.grillage_model import verify_bridge_grillage_results
 
     # RunAnalysis_ret != 0
     rep_bad_rc = _make_synthetic_analysis_report(run_ret=1)
@@ -944,8 +946,8 @@ def test_conservacion_salvedades_y_estado_requiere_revision_cuando_implementados
     pero calculation_status global es CalculationStatus.REQUIERE_REVISION porque persisten
     comprobaciones obligatorias de puente en unimplemented_checks.
     """
-    from jmstructural_common.audit_status import CalculationStatus
-    from bridgejm.integration.grillage_model import verify_bridge_grillage_results
+    from bridgecalc._common.audit_status import CalculationStatus
+    from bridgecalc.integration.grillage_model import verify_bridge_grillage_results
 
     rep_ok = _make_synthetic_analysis_report(
         girder_section="PG_2100x700x55x30",
@@ -973,7 +975,7 @@ def test_ltb_viga_armada_pg_referencia_independiente_ec3():
     EN 10025-2 Tabla 7 y EN 1993-1-5 §5.1-5.3.
     """
     import math
-    from bridgejm.integration.grillage_model import (
+    from bridgecalc.integration.grillage_model import (
         _compute_member_capacities_ec3,
         default_bridge_material,
         section_props_from_catalog,
@@ -1226,7 +1228,7 @@ class _StatefulBridgeSapMock:
 
             def JointReact(self, name, item_type, *args):
                 # Devolver 1/8 de la carga vertical esperada en cada uno de los 8 apoyos
-                from bridgejm.integration.grillage_model import (
+                from bridgecalc.integration.grillage_model import (
                     compute_expected_vertical_loads_kN,
                     section_props_from_catalog,
                 )
@@ -1330,7 +1332,7 @@ def test_bucle_redimensionamiento_actualiza_propiedades_reanaliza_y_converge(tmp
     re-ejecuta RunAnalysis() y converge en una sección armada PG_* con DCR_ULS <= 1.0 y DCR_SLS <= 1.0.
     """
     from jmworkbench.encargo import interpretar_encargo
-    from bridgejm.integration.grillage_model import (
+    from bridgecalc.integration.grillage_model import (
         bridge_spec_from_encargo,
         execute_bridge_grillage_design_loop,
     )
@@ -1391,7 +1393,7 @@ def test_bucle_redimensionamiento_agotamiento_catalogo_calculado_falla(tmp_path)
     """
     from dataclasses import replace
     from jmworkbench.encargo import interpretar_encargo
-    from bridgejm.integration.grillage_model import (
+    from bridgecalc.integration.grillage_model import (
         bridge_spec_from_encargo,
         execute_bridge_grillage_design_loop,
         section_props_from_catalog,
@@ -1442,7 +1444,7 @@ def test_bridge_grillage_30m_closed_loop_resize_live_sap2000(tmp_path):
     import json
     import shutil
     from jmworkbench.encargo import interpretar_encargo
-    from bridgejm.integration.grillage_model import (
+    from bridgecalc.integration.grillage_model import (
         bridge_spec_from_encargo,
         run_bridge_grillage_design_loop_sap2000,
     )

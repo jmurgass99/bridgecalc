@@ -1,8 +1,8 @@
-"""Tests for bridgejm.ec1_traffic — EN 1991-2 traffic load models."""
+"""Tests for bridgecalc.ec1_traffic — EN 1991-2 traffic load models."""
 import math
 import pytest
 
-from bridgejm.ec1_traffic import (
+from bridgecalc.ec1_traffic import (
     LM1,
     LM2,
     LM3,

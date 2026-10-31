@@ -2,14 +2,14 @@
 import pytest
 import numpy as np
 
-from bridgejm.fragility.fragility_curves import (
+from bridgecalc.fragility.fragility_curves import (
     FragilityCurveSet,
     hazus_rc_pier_fragility,
     fragility_probability,
     compute_discrete_damage_probabilities,
     HAZUS_RC_PIER_PARAMS,
 )
-from bridgejm.fragility import FragilityCurve
+from bridgecalc.fragility import FragilityCurve
 
 
 class TestFragilityProbability:

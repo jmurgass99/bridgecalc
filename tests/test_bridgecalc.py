@@ -1,9 +1,9 @@
-"""Tests para BridgeJm — HL-93 + fragilidad."""
+"""Tests para BridgeCalc — HL-93 + fragilidad."""
 import numpy as np
 import pytest
 
-from bridgejm.loads import HL93Configuration, hl93_influence_envelope
-from bridgejm.fragility import (
+from bridgecalc.loads import HL93Configuration, hl93_influence_envelope
+from bridgecalc.fragility import (
     FragilityCurve,
     lognormal_fragility,
     park_ang_damage_index,

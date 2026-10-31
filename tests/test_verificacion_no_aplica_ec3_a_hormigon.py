@@ -12,13 +12,15 @@ Regla: sin verificacion de hormigon implementada (EN 1992-2 / AASHTO §5), el re
 NO_CALCULADO con el motivo, sin capacidades ni DCR.
 """
 from __future__ import annotations
+import pytest as _pytest_skip
+_pytest_skip.importorskip("fastsap")  # dependencia externa opcional: sin ella estos tests se omiten
 
 import importlib.util
 from pathlib import Path
 
-from jmstructural_common.audit_status import CalculationStatus
+from bridgecalc._common.audit_status import CalculationStatus
 
-from bridgejm.integration.grillage_model import (
+from bridgecalc.integration.grillage_model import (
     default_bridge_material,
     select_bridge_sections,
     verify_bridge_grillage_results,
@@ -59,7 +61,7 @@ def test_bucle_de_redimensionado_termina_limpio_si_la_verificacion_es_NO_CALCULA
     no converge, tablas vacias, equilibrio incumplido, material no soportado), su respuesta no trae
     `governing_check`/`girder_capacities`/`sls_deflections` y el bucle los leia ANTES de mirar el
     estado -> KeyError; la rama `INVALID_ANALYSIS_OR_MISSING_RESULTS` era inalcanzable."""
-    import bridgejm.integration.grillage_model as gm
+    import bridgecalc.integration.grillage_model as gm
     from jmworkbench.encargo import interpretar_encargo
 
     enc = interpretar_encargo(
@@ -87,7 +89,7 @@ def test_seccion_clase_4_no_se_calcula_con_un_coeficiente_inventado() -> None:
     """Defecto B1: Clase 4 se resolvia con `0.85 * Wel` (comentado como 'reduccion conservadora'),
     un coeficiente que no sale de EN 1993-1-5 (seccion eficaz). Sin seccion eficaz implementada,
     la verificacion es NO_CALCULADO con el motivo, nunca un DCR apoyado en un factor inventado."""
-    from bridgejm.integration.grillage_model import _compute_member_capacities_ec3, plate_girder_section_props
+    from bridgecalc.integration.grillage_model import _compute_member_capacities_ec3, plate_girder_section_props
 
     esbelta = plate_girder_section_props("PG_2000x600x40x10", 2.0, 0.6, 0.040, 0.010).to_dict()
     mat = default_bridge_material("acero", "EN 1991-2").to_dict()

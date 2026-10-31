@@ -7,7 +7,7 @@ considerar en el proyecto de puentes de carretera, RD 1359/2011), Cap. 4
 adaptacion espanola literal del Load Model 1 (LM1) de EN 1991-2:2003 Tabla
 4.2 -- mismos valores caracteristicos (300/200/100 kN por carril, 9.0/2.5/2.5
 kN/m2, carril virtual de 3.0 m) -- por lo que ancla igualmente
-``bridgejm.loads.eurocode_lm1``. El Modelo de Carga 2 (MC2) de IAP-11 == LM2
+``bridgecalc.loads.eurocode_lm1``. El Modelo de Carga 2 (MC2) de IAP-11 == LM2
 de EN 1991-2 Sec 4.3.3 (eje aislado de 400 kN).
 
 Fuente secundaria: **W00736 — Puente Viga-Losa.xlsx** (evaluacion real de un
@@ -16,7 +16,7 @@ puente viga-losa AASHTO LRFD / HL-93), para el factor de impacto IM.
 REGLA DE ORO de esta campana: no fiarse de los numeros impresos en las
 fichas. Cada oraculo de este fichero se recalcula a mano (formulas de
 mecanica de vigas cerradas, sin reimportar ni llamar a las funciones de
-``bridgejm`` para generar el propio oraculo) antes de anclarlo contra el
+``bridgecalc`` para generar el propio oraculo) antes de anclarlo contra el
 resultado de la funcion de produccion.
 
 Un tren de cargas del propio modulo tiene un error de formula descubierto
@@ -29,7 +29,7 @@ V=Q, verificada correcta).
 """
 import pytest
 
-from bridgejm.loads.eurocode_lm1 import (
+from bridgecalc.loads.eurocode_lm1 import (
     EurocodeLM1Input,
     EurocodeLM2Input,
     evaluate_eurocode_lm1,
@@ -42,7 +42,7 @@ from bridgejm.loads.eurocode_lm1 import (
     LM2_WHEEL_CONTACT_m,
     LM2_WHEEL_SPACING_m,
 )
-from bridgejm.loads.hl93 import HL93Configuration
+from bridgecalc.loads.hl93 import HL93Configuration
 
 
 class TestIAP11LM1CargasCaracteristicas:
@@ -183,7 +183,7 @@ class TestBugM_TS_CorregidoYAnclado:
     """BUG DE PRODUCCION real, corregido por el controlador (no por el agente
     que detecto y documento este hallazgo -- ver commit de correccion).
 
-    ``bridgejm/loads/eurocode_lm1.py`` calculaba el momento del tandem
+    ``bridgecalc/loads/eurocode_lm1.py`` calculaba el momento del tandem
     tratando los DOS ejes como si fueran una unica carga puntual equivalente
     2*Q_eff aplicada en la posicion del primer eje, usando la formula de viga
     simple para UNA carga puntual M(a) = P*a*(L-a)/L. Para L=30, spacing=1.2,
@@ -199,7 +199,7 @@ class TestBugM_TS_CorregidoYAnclado:
     """
 
     def test_M_TS_matches_the_exact_equidistant_theorem_value(self):
-        from bridgejm.loads.eurocode_lm1 import (
+        from bridgecalc.loads.eurocode_lm1 import (
             LM1_TS_AXLE_kN_PER_LANE,
             EurocodeLM1Input,
             evaluate_eurocode_lm1,

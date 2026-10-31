@@ -1,7 +1,7 @@
 """Tests BJ-002: trenes de carga adicionales — Eurocode LM1/LM2 + NCh HL-93K."""
 import pytest
 
-from bridgejm.loads.eurocode_lm1 import (
+from bridgecalc.loads.eurocode_lm1 import (
     EurocodeLM1Input,
     EurocodeLM2Input,
     evaluate_eurocode_lm1,
@@ -10,7 +10,7 @@ from bridgejm.loads.eurocode_lm1 import (
     LM1_UDL_kN_per_m2_PER_LANE,
     LM2_AXLE_LOAD_kN,
 )
-from bridgejm.loads.hl93 import (
+from bridgecalc.loads.hl93 import (
     HL93KNChConfiguration,
     hl93k_nch_envelope,
     NCH_TRUCK_AXLES_kN,
@@ -131,7 +131,7 @@ class TestHL93KNCh:
 
     def test_comparacion_con_hl93(self):
         """NCh deberia dar M similar al HL-93 (ambos ~430 kN truck)."""
-        from bridgejm.loads.hl93 import HL93Configuration, hl93_influence_envelope
+        from bridgecalc.loads.hl93 import HL93Configuration, hl93_influence_envelope
         r_nch = hl93k_nch_envelope(HL93KNChConfiguration(span_m=30))
         r_hl93 = hl93_influence_envelope(HL93Configuration(span_m=30))
         # Deben ser del mismo orden de magnitud

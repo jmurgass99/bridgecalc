@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from bridgejm.design.aashto_box_girder import (
+from bridgecalc.design.aashto_box_girder import (
     BoxGirderSection,
     flexural_strength,
     shear_strength,

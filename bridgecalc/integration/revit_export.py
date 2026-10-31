@@ -1,8 +1,8 @@
 """
-Exporta geometría BridgeJm a Revit vía script pyRevit.
+Exporta geometría BridgeCalc a Revit vía script pyRevit.
 
 Flujo:
-    1. Calculas/defines tu puente en BridgeJm.
+    1. Calculas/defines tu puente en BridgeCalc.
     2. `to_revit_script(bridge)` devuelve un string con código pyRevit CPython3.
     3. Pegas el string en pyRevit (o lo guardas como `.py` en tu extension).
     4. Corres el script desde Revit con el documento del proyecto abierto.
@@ -35,7 +35,7 @@ class DeckGeometry:
     """Tablero (deck)."""
     width_m: float        # ancho total
     thickness_m: float    # peralte
-    family_name: str = "BridgeJm_Deck"
+    family_name: str = "BridgeCalc_Deck"
 
 
 @dataclass(frozen=True)
@@ -44,14 +44,14 @@ class BridgeGeometry:
     spans_m: list[float]                  # luces sucesivas
     piers: list[PierGeometry] = field(default_factory=list)
     deck: DeckGeometry = field(default_factory=lambda: DeckGeometry(10.0, 1.2))
-    pier_family: str = "BridgeJm_AdaptivePier"
+    pier_family: str = "BridgeCalc_AdaptivePier"
     project_name: str = "Puente"
 
 
 # ---- generador del script --------------------------------------------
 
 _HEADER = '''"""
-pyRevit script — autogenerado por BridgeJm.
+pyRevit script — autogenerado por BridgeCalc.
 Corre con un documento Revit abierto. Requiere pyRevit >= 4.8 (CPython3).
 """
 # -*- coding: utf-8 -*-
@@ -121,11 +121,11 @@ def to_revit_script(bridge: BridgeGeometry) -> str:
         _HEADER
         + f'\nPROJECT_NAME = "{bridge.project_name}"\n'
         + f'SPANS_M = {list(bridge.spans_m)!r}\n\n'
-        + 'with Transaction(doc, "BridgeJm import - %s" % PROJECT_NAME) as t:\n'
+        + 'with Transaction(doc, "BridgeCalc import - %s" % PROJECT_NAME) as t:\n'
         + '    t.Start()\n'
         + body
         + '    t.Commit()\n'
-        + '\nprint("BridgeJm: puente generado con %d luces" % len(SPANS_M))\n'
+        + '\nprint("BridgeCalc: puente generado con %d luces" % len(SPANS_M))\n'
     )
     return script
 

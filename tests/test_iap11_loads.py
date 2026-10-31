@@ -1,4 +1,4 @@
-"""Tests for Spanish highway bridge traffic live load model IAP-11 in BridgeJm.
+"""Tests for Spanish highway bridge traffic live load model IAP-11 in BridgeCalc.
 
 Verifies:
 - Transverse division of notional lanes per IAP-11 Table 4.1 (including boundaries at 5.4 m and 6.0 m).
@@ -12,7 +12,7 @@ Verifies:
 import math
 import pytest
 
-from bridgejm.loads.iap11 import (
+from bridgecalc.loads.iap11 import (
     IAP11TrafficEnvelope,
     NotionalLaneLayout,
     EN1991_2_LoadModel2,

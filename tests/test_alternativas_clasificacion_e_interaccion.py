@@ -10,13 +10,15 @@
    AASHTO §6.8.2.3 / §6.9.2.2). Se usaba 0.5 sin fuente normativa.
 """
 from __future__ import annotations
+import pytest as _pytest_skip
+_pytest_skip.importorskip("jmworkbench")  # dependencia externa opcional: sin ella estos tests se omiten
 
 import dataclasses
 
 import pytest
 
 from jmworkbench.encargo import interpretar_encargo
-from bridgejm.integration.grillage_model import (
+from bridgecalc.integration.grillage_model import (
     _evaluate_concurrent_station_row,
     bridge_spec_from_encargo,
     evaluate_bridge_design_alternatives,

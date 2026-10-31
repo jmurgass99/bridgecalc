@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from bridgejm.design.aashto_superstructure import (
+from bridgecalc.design.aashto_superstructure import (
     concrete_box_girder_flexure,
     concrete_box_girder_shear,
 )

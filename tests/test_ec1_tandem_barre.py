@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import pytest
 
-from bridgejm.ec1_traffic import traffic_envelope_lm1
+from bridgecalc.ec1_traffic import traffic_envelope_lm1
 
 A_TANDEM = 1.2   # separacion de ejes del TS, EN 1991-2 §4.3.2
 

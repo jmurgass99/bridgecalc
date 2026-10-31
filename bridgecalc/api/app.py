@@ -1,4 +1,4 @@
-"""FastAPI app para BridgeJm — HL-93 envelope + fragilidad."""
+"""FastAPI app para BridgeCalc — HL-93 envelope + fragilidad."""
 from typing import Any
 
 
@@ -125,6 +125,6 @@ def create_app() -> Any:
     """App FastAPI standalone."""
     from fastapi import FastAPI
 
-    app = FastAPI(title="BridgeJm API", version="0.1.0")
+    app = FastAPI(title="BridgeCalc API", version="0.1.0")
     app.include_router(create_router())
     return app

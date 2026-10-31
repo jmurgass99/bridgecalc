@@ -2,7 +2,7 @@
 import math
 import pytest
 
-from bridgejm.loads.lm3_special import (
+from bridgecalc.loads.lm3_special import (
     SpecialVehicle, EUROCODE_SV120, EUROCODE_SV196,
     IRC_CLASS_A, AS_SM1600, AASHTO_HS20,
     max_moment_simple_span, impact_factor,

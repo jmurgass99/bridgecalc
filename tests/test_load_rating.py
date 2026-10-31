@@ -2,7 +2,7 @@
 """Calificación de carga AASHTO LRFR (MBE)."""
 import pytest
 
-from bridgejm.rating.load_rating import (
+from bridgecalc.rating.load_rating import (
     RatingInput,
     rating_factor,
     rating_both_levels,

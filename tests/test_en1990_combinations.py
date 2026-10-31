@@ -2,7 +2,7 @@
 """Combinaciones EN 1990 — validado a mano."""
 import pytest
 
-from bridgejm.loads.en1990_combinations import (
+from bridgecalc.loads.en1990_combinations import (
     VariableAction,
     uls_strength,
     uls_governing,

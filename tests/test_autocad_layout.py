@@ -1,12 +1,14 @@
 """Tests para autocad_layout."""
 from __future__ import annotations
+import pytest as _pytest_skip
+_pytest_skip.importorskip("rebardxf")  # dependencia externa opcional: sin ella estos tests se omiten
 
 from unittest.mock import MagicMock
 
 import pytest
 
-from bridgejm.integration import autocad_layout as al
-from bridgejm.integration.revit_export import BridgeGeometry, PierGeometry
+from bridgecalc.integration import autocad_layout as al
+from bridgecalc.integration.revit_export import BridgeGeometry, PierGeometry
 
 
 def _client_mock():
@@ -67,7 +69,7 @@ def _sample_converged_bridge_design_result(tmp_path):
     import importlib.util
     from pathlib import Path
     from jmworkbench.encargo import interpretar_encargo
-    from bridgejm.integration.grillage_model import (
+    from bridgecalc.integration.grillage_model import (
         bridge_spec_from_encargo,
         execute_bridge_grillage_design_loop,
     )

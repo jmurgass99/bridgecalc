@@ -10,11 +10,13 @@ del lado inseguro, y decidia `feasible` con una etiqueta `GRILLAGE_COUPLED_MODEL
 un calculo con modelo que no existio.
 """
 from __future__ import annotations
+import pytest as _pytest_skip
+_pytest_skip.importorskip("jmworkbench")  # dependencia externa opcional: sin ella estos tests se omiten
 
 import pytest
 
 from jmworkbench.encargo import interpretar_encargo
-from bridgejm.integration.grillage_model import (
+from bridgecalc.integration.grillage_model import (
     _compute_member_capacities_ec3,
     bridge_spec_from_encargo,
     evaluate_bridge_design_alternatives,

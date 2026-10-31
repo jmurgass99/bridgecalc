@@ -1,4 +1,4 @@
-"""External datasets curated for BridgeJm.
+"""External datasets curated for BridgeCalc.
 
 Currently exposes the Concepción-2010 bridge fragility dataset.
 """

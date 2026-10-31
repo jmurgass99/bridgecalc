@@ -6,8 +6,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from bridgejm.api.app import create_router
-from bridgejm.ec1_traffic import LM1, LM2, traffic_envelope_lm1
+from bridgecalc.api.app import create_router
+from bridgecalc.ec1_traffic import LM1, LM2, traffic_envelope_lm1
 
 
 @pytest.fixture

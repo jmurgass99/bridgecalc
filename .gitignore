@@ -6,3 +6,7 @@ __pycache__/
 build/
 dist/
 .venv/
+
+# herramientas locales de agentes
+.claude-flow/
+.claude/

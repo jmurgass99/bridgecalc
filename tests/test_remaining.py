@@ -2,11 +2,11 @@
 import numpy as np
 import pytest
 
-from bridgejm.loads.influence_lines import (
+from bridgecalc.loads.influence_lines import (
     envelope_from_il, simple_beam_M_influence,
     simple_beam_V_influence, two_span_continuous_M_at_support,
 )
-from bridgejm.optimization import SpanOptimizationInput, optimize_n_spans
+from bridgecalc.optimization import SpanOptimizationInput, optimize_n_spans
 
 
 class TestInfluence:

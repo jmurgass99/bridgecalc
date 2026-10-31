@@ -4,13 +4,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from bridgejm.datasets import (
+from bridgecalc.datasets import (
     BridgePier,
     CONCEPCION_2010_PIERS,
     fragility_curve,
     pier_by_name,
 )
-from bridgejm.fragility import FragilityCurve
+from bridgecalc.fragility import FragilityCurve
 
 
 def test_dataset_has_five_piers():

@@ -1,4 +1,4 @@
-"""Memorias handcalcs para BridgeJm."""
+"""Memorias handcalcs para BridgeCalc."""
 from .lrfd_hl93 import HL93MemoInput, HL93MemoResult, generar_memoria_hl93
 from .hl93_handcalcs import (
     HL93HandcalcsInput,

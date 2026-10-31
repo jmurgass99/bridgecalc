@@ -1,7 +1,7 @@
 """Tests AS 5100 + CC-40 cargas."""
 import pytest
 
-from bridgejm.loads.multi_code import (
+from bridgecalc.loads.multi_code import (
     AS5100Input, CC40Input, evaluate_as5100, evaluate_cc40,
 )
 

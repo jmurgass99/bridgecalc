@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from bridgejm.analysis.pier_pushover import (
+from bridgecalc.analysis.pier_pushover import (
     PierPushoverInput,
     pier_pushover_sdof,
     bilinear_idealization,

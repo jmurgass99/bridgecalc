@@ -3,20 +3,45 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "bridgejm"
-version = "0.1.0"
-description = "Diseño de puentes AASHTO LRFD + análisis sísmico"
+name = "bridgecalc"
+version = "1.0.0"
+description = "Bridge design and load rating: AASHTO LRFD (HL-93, superstructure, box girders), EN 1991-2 traffic models (LM1-LM3), IAP-11, NCh, distribution factors, influence lines, load combinations, EC8 ductility, pier pushover and fragility curves."
+readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["numpy>=1.26", "jmstructural-common"]
+license = { text = "MIT" }
+authors = [{ name = "Jesús Murgas" }]
+keywords = ["bridge", "aashto-lrfd", "hl-93", "en-1991-2", "load-rating", "influence-lines", "fragility", "structural-engineering"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = ["numpy>=1.26"]
 
 [project.optional-dependencies]
-test = ["pytest>=8"]
+api = ["fastapi>=0.110", "uvicorn>=0.29", "pydantic>=2", "httpx>=0.27"]
+dxf = ["ezdxf>=1.0"]
+memos = ["handcalcs>=1.6"]
+test = ["pytest>=8", "pytest-timeout>=2.2"]
+
+[project.urls]
+Homepage = "https://github.com/jmurgass99/bridgecalc"
+Repository = "https://github.com/jmurgass99/bridgecalc"
+Issues = "https://github.com/jmurgass99/bridgecalc/issues"
 
 [tool.setuptools.packages.find]
-include = ["bridgejm*"]
+include = ["bridgecalc*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-[tool.uv.sources]
-jmstructural-common = { workspace = true }
+markers = [
+    "slow: tests lentos",
+    "integration: integración entre módulos",
+    "api: endpoints REST",
+    "live: requiere software comercial en vivo (SAP2000, Revit)",
+]

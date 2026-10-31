@@ -1,20 +1,20 @@
 r"""
-pyRevit script DE EJEMPLO — BridgeJm import.
+pyRevit script DE EJEMPLO — BridgeCalc import.
 
 Cómo usar:
     1. Copia este archivo a tu pyRevit extension:
-       %APPDATA%\pyRevit\Extensions\<TuExt>.extension\BridgeJm.tab\...\bridgejm_import.pushbutton\script.py
+       %APPDATA%\pyRevit\Extensions\<TuExt>.extension\BridgeCalc.tab\...\bridgecalc_import.pushbutton\script.py
     2. Recarga pyRevit (Reload).
     3. Abre tu proyecto Revit y haz click en el botón.
 
 Requisitos:
     - pyRevit 4.8+ (CPython3 engine).
     - Familias cargadas en el proyecto:
-        * BridgeJm_AdaptivePier   (parámetros: Height, Width, Depth)
-        * BridgeJm_Deck            (parámetros: Width, Thickness)
+        * BridgeCalc_AdaptivePier   (parámetros: Height, Width, Depth)
+        * BridgeCalc_Deck            (parámetros: Width, Thickness)
 
 Este archivo es solo plantilla. Para generar el script personalizado a tu
-geometría, usa `bridgejm.integration.revit_export.to_revit_script(bridge)`
+geometría, usa `bridgecalc.integration.revit_export.to_revit_script(bridge)`
 y pega el resultado aquí.
 """
 # -*- coding: utf-8 -*-
@@ -32,8 +32,8 @@ PIER_WIDTH_M = 1.5
 PIER_DEPTH_M = 2.0
 DECK_WIDTH_M = 10.0
 DECK_THICK_M = 1.2
-PIER_FAMILY = "BridgeJm_AdaptivePier"
-DECK_FAMILY = "BridgeJm_Deck"
+PIER_FAMILY = "BridgeCalc_AdaptivePier"
+DECK_FAMILY = "BridgeCalc_Deck"
 
 
 def _find_family_symbol(name):
@@ -46,7 +46,7 @@ def _find_family_symbol(name):
     raise RuntimeError("Family not found: %s" % name)
 
 
-with Transaction(doc, "BridgeJm import") as t:
+with Transaction(doc, "BridgeCalc import") as t:
     t.Start()
 
     pier_sym = _find_family_symbol(PIER_FAMILY)
@@ -79,4 +79,4 @@ with Transaction(doc, "BridgeJm import") as t:
 
     t.Commit()
 
-print("BridgeJm: puente generado con %d luces" % len(SPANS_M))
+print("BridgeCalc: puente generado con %d luces" % len(SPANS_M))

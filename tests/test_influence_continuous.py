@@ -2,14 +2,14 @@
 import numpy as np
 import pytest
 
-from bridgejm.loads.influence_lines import (
+from bridgecalc.loads.influence_lines import (
     influence_line_continuous,
     critical_position,
     InfluenceLine,
     simple_beam_M_influence,
     two_span_continuous_M_at_support,
 )
-from bridgejm.loads.hl93 import TRUCK_AXLES_kN, TRUCK_AXLE_SPACINGS_m
+from bridgecalc.loads.hl93 import TRUCK_AXLES_kN, TRUCK_AXLE_SPACINGS_m
 
 
 class TestInfluenceLineContinuous:

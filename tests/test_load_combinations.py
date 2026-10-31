@@ -1,13 +1,13 @@
 """Combinaciones de carga AASHTO LRFD §3.4.1 + factores de distribución §4.6.2."""
 import pytest
 
-from bridgejm.loads.load_combinations import (
+from bridgecalc.loads.load_combinations import (
     LOAD_COMBINATIONS,
     factored_effect,
     gamma,
     governing_strength,
 )
-from bridgejm.loads.distribution_factors import (
+from bridgecalc.loads.distribution_factors import (
     GirderGeometry,
     distribution_factors,
     moment_interior,

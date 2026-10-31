@@ -1,4 +1,4 @@
-"""Configuracion de pytest para BridgeJm: gateo de tests @pytest.mark.compat y @pytest.mark.live."""
+"""Configuracion de pytest para BridgeCalc: gateo de tests @pytest.mark.compat y @pytest.mark.live."""
 from __future__ import annotations
 
 import pytest

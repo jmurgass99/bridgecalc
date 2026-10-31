@@ -1,8 +1,8 @@
 """Tests Eurocode LM1 + AASHTO §3.10 + abutment Coulomb."""
 import pytest
 
-from bridgejm.loads.eurocode import LM1Input, evaluate_lm1
-from bridgejm.seismic import (
+from bridgecalc.loads.eurocode import LM1Input, evaluate_lm1
+from bridgecalc.seismic import (
     AASHTOSeismicInput, AbutmentInput,
     aashto_design_spectrum, coulomb_pressure,
 )

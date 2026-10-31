@@ -1,7 +1,7 @@
 """Tests BJ-006: memoria handcalcs LRFD HL-93 Strength I."""
 import pytest
 
-from bridgejm.memos.hl93_handcalcs import (
+from bridgecalc.memos.hl93_handcalcs import (
     HL93HandcalcsInput,
     generar_memoria_handcalcs,
 )

@@ -1,7 +1,7 @@
 """Tests para envolvente multi-tramo."""
 import pytest
 
-from bridgejm.loads import MultiSpanInput, envelope_multispan
+from bridgecalc.loads import MultiSpanInput, envelope_multispan
 
 
 class TestMultiSpan:

@@ -1,4 +1,4 @@
-"""Modulos de analisis estructural para BridgeJm."""
+"""Modulos de analisis estructural para BridgeCalc."""
 from .pier_pushover import (
     PierPushoverInput,
     PierPushoverResult,

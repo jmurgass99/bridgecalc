@@ -1,54 +1,75 @@
-# BridgeJm
+# bridgecalc
 
-Diseño de puentes — AASHTO LRFD + análisis sísmico (IEG 3260).
+Diseño y calificación de puentes: cargas vivas AASHTO LRFD (HL-93, envolventes, factores de distribución, impacto dinámico), modelos de carga EN 1991-2 (LM1, LM2, LM3 especiales), IAP-11, NCh, combinaciones EN 1990 y AASHTO, líneas de influencia en vigas simples y continuas, calificación de carga (rating factor), superestructura y vigas cajón AASHTO, ductilidad EC8, pushover de pilas y curvas de fragilidad.
 
-## Scope
+[![CI](https://github.com/jmurgass99/bridgecalc/actions/workflows/ci.yml/badge.svg)](https://github.com/jmurgass99/bridgecalc/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-- `bridgejm.loads.hl93` — envolvente HL-93 (camión + tandem + carril) con IM
-- `bridgejm.fragility.park_ang` — índice de daño + curvas de fragilidad lognormales
+Paquete independiente. Única dependencia: `numpy`.
 
-## Roadmap
+## Instalación
 
-- [ ] Bridge a `fastcsib` (CSi Bridge) — actualmente stub
-- [ ] Multi-tramo + influencias por integración numérica de superposición
-- [ ] PGA → curvas fragilidad de cepas chilenas (Concepción 2010 dataset)
-
-## Integración con Revit y AutoCAD (Grupo G — IDEAS_20)
-
-### Revit (pyRevit script)
-
-`revit_export.to_revit_script(bridge)` genera el código pyRevit que crea las
-cepas (Adaptive Component `BridgeJm_AdaptivePier`) y el tablero
-(`BridgeJm_Deck`) por cada luz.
-
-```python
-from bridgejm.integration.revit_export import (
-    BridgeGeometry, PierGeometry, DeckGeometry, save_script
-)
-bridge = BridgeGeometry(
-    spans_m=[30, 40, 30],
-    piers=[PierGeometry(30, 10), PierGeometry(70, 10)],
-    deck=DeckGeometry(10, 1.2),
-    project_name="PuenteJM",
-)
-save_script(bridge, "bridgejm_revit.py")
+```bash
+pip install git+https://github.com/jmurgass99/bridgecalc.git
 ```
 
-Instalación de pyRevit: https://www.pyrevitlabs.io/. Copia el `.py` generado
-a tu extensión pyRevit y ejecútalo con el proyecto Revit abierto.
+Extras: `api` (REST), `dxf` (planos con ezdxf), `memos` (memorias con handcalcs), `test`.
 
-Un script genérico de plantilla está en
-`bridgejm/integration/pyrevit_scripts/bridgejm_import.py`.
+## Inicio rápido
 
-### AutoCAD (layout 2D)
-
-`autocad_layout.draw_bridge_layout` dibuja el alzado del puente (eje, cepas,
-cotas) en una sesión AutoCAD viva (vía `dxfstructuraljm.integration.autocad_live`).
+### Envolvente HL-93 y calificación de carga
 
 ```python
-from dxfstructuraljm.integration.autocad_live import AutoCADClient
-from bridgejm.integration.autocad_layout import draw_bridge_layout
+from bridgecalc.loads.hl93 import hl93_envelope
+from bridgecalc.rating.load_rating import RatingInput, rating_both_levels
 
-with AutoCADClient() as cad:
-    draw_bridge_layout(cad, bridge)
+e = hl93_envelope(30.0)          # viga simple de 30 m, IM = 33 %
+print(e["M_max_kNm"], e["V_max_kN"], e["governing_vehicle"])   # 3787 kN·m, 532 kN, truck
+
+inp = RatingInput(Rn=9500.0, DC=2600.0, DW=450.0, LL_IM=0.62 * e["M_max_kNm"], phi=0.90, phi_c=0.95)
+for level, r in rating_both_levels(inp).items():
+    print(level, round(r.RF, 2), r.ok)   # inventory 1.02 True, operating 1.32 True
 ```
+
+### Líneas de influencia y posición crítica de un tren de cargas
+
+```python
+from bridgecalc.loads.influence_lines import simple_beam_M_influence, critical_position
+
+il = simple_beam_M_influence(L=25.0, x_target_m=12.5)
+axles = [(0.0, 35.0), (4.3, 145.0), (8.6, 145.0)]
+x_cr, M_max = critical_position(il, axles, udl_kN_per_m=9.3)   # 8.14 m, 2372 kN·m
+```
+
+### Modelo de carga LM1 (EN 1991-2)
+
+```python
+from bridgecalc.loads.eurocode_lm1 import EurocodeLM1Input, evaluate_eurocode_lm1
+```
+
+Los scripts de `examples/` ejecutan estos flujos completos.
+
+## Módulos
+
+| Paquete | Contenido |
+|---|---|
+| `loads` | `hl93`, `aashto_lrfd`, `distribution_factors`, `dynamic_impact`, `eurocode_lm1`, `lm3_special`, `iap11`, `en1990_combinations`, `load_combinations`, `influence_lines`, `multispan`, `multi_code` |
+| `rating` | Factor de calificación a nivel inventario y operación |
+| `design` | Superestructura y vigas cajón AASHTO |
+| `seismic`, `ec8_ductility`, `analysis` | Pushover de pilas, ductilidad EC8 |
+| `fragility` | Curvas de fragilidad |
+| `damping`, `datasets`, `optimization`, `memos/`, `api/` | Amortiguamiento, datos de referencia, optimización, memorias, REST |
+| `integration/` | Modelo de emparrillado para SAP2000 y exportación a Revit y AutoCAD. Requieren paquetes externos opcionales (`fastsap`, `rebardxf`, pyRevit); sin ellos el resto del paquete funciona y sus tests se omiten |
+
+## Validación
+
+Tests golden con fichas de cargas de puente, envolventes HL-93 contra cálculo manual, tándem y LM1 de EN 1991-2, combinaciones EN 1990 y calificación de carga.
+
+## Licencia
+
+MIT. Consulta [LICENSE](LICENSE).
+
+---
+
+Parte del toolkit estructural de código abierto **Loadpath**, de [Jesús Murgas](https://github.com/jmurgass99).

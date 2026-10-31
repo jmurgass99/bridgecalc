@@ -1,7 +1,7 @@
-"""Tests for bridgejm.ec8_ductility — EN 1998-2 ductile pier design."""
+"""Tests for bridgecalc.ec8_ductility — EN 1998-2 ductile pier design."""
 import pytest
 
-from bridgejm.ec8_ductility import (
+from bridgecalc.ec8_ductility import (
     behavior_factor_q,
     confinement_required,
     plastic_hinge_length,

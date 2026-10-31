@@ -1,4 +1,4 @@
-"""bridgejm.loads.iap11 — Sobrecargas de tráfico según IAP-11 (Instrucción de Carreteras, España).
+"""bridgecalc.loads.iap11 — Sobrecargas de tráfico según IAP-11 (Instrucción de Carreteras, España).
 
 Implementa las disposiciones del Capítulo 4 "Sobrecargas de uso de tráfico rodado"
 de la Instrucción sobre las acciones a considerar en el proyecto de puentes de carretera

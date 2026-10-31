@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from bridgejm.integration import revit_export as rx
+from bridgecalc.integration import revit_export as rx
 
 
 def _sample_bridge() -> rx.BridgeGeometry:
@@ -44,7 +44,7 @@ def test_script_has_pier_for_each_input():
     script = rx.to_revit_script(bridge)
     # debe haber 2 piers
     assert "pier_inst_0" in script and "pier_inst_1" in script
-    assert "BridgeJm_AdaptivePier" in script
+    assert "BridgeCalc_AdaptivePier" in script
 
 
 def test_script_has_deck_per_span():
@@ -55,7 +55,7 @@ def test_script_has_deck_per_span():
     assert script.count("deck_inst_1") >= 1
     assert script.count("deck_inst_2") >= 1
     assert "deck_inst_3" not in script
-    assert "BridgeJm_Deck" in script
+    assert "BridgeCalc_Deck" in script
 
 
 def test_script_synthesizes_piers_when_empty():
@@ -70,7 +70,7 @@ def test_script_synthesizes_piers_when_empty():
 def test_save_script(tmp_path):
     path = rx.save_script(_sample_bridge(), tmp_path / "bridge_revit.py")
     content = open(path, encoding="utf-8").read()
-    assert "BridgeJm import" in content
+    assert "BridgeCalc import" in content
 
 
 def test_project_name_in_script():

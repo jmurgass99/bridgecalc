@@ -1,9 +1,9 @@
-"""Tests para IDEAS_20 grupos A/B/C en BridgeJm."""
+"""Tests para IDEAS_20 grupos A/B/C en BridgeCalc."""
 import pytest
 
 
 def test_lrfd_hl93_corto():
-    from bridgejm.memos.lrfd_hl93 import HL93MemoInput, generar_memoria_hl93
+    from bridgecalc.memos.lrfd_hl93 import HL93MemoInput, generar_memoria_hl93
     res = generar_memoria_hl93(HL93MemoInput(L_span_m=10))
     assert res.M_DC_kNm > 0
     assert res.M_Strength_I_kNm > 0
@@ -11,13 +11,13 @@ def test_lrfd_hl93_corto():
 
 
 def test_lrfd_hl93_largo():
-    from bridgejm.memos.lrfd_hl93 import HL93MemoInput, generar_memoria_hl93
+    from bridgecalc.memos.lrfd_hl93 import HL93MemoInput, generar_memoria_hl93
     res = generar_memoria_hl93(HL93MemoInput(L_span_m=30))
     assert res.M_truck_kNm > 0
 
 
 def test_bwbn_lineal():
-    from bridgejm.damping.bwbn import BWBNParams, simulate
+    from bridgecalc.damping.bwbn import BWBNParams, simulate
     p = BWBNParams()
     u_hist = [0.0, 0.001, 0.002, 0.003, 0.004]
     F = simulate(u_hist, p, dt=0.01)
@@ -26,7 +26,7 @@ def test_bwbn_lineal():
 
 
 def test_bwbn_histeresis_no_lineal():
-    from bridgejm.damping.bwbn import BWBNParams, simulate
+    from bridgecalc.damping.bwbn import BWBNParams, simulate
     p = BWBNParams(alpha=0.05)
     u = [0.0]
     for i in range(1, 50):

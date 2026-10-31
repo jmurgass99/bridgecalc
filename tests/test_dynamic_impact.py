@@ -1,6 +1,6 @@
-"""Tests for bridgejm.loads.dynamic_impact."""
+"""Tests for bridgecalc.loads.dynamic_impact."""
 import pytest
-from bridgejm.loads.dynamic_impact import (
+from bridgecalc.loads.dynamic_impact import (
     dynamic_load_allowance,
     wind_pressure_bridge,
     combined_dynamic_truck_wind,

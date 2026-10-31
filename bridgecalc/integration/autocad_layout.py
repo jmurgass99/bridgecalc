@@ -1,7 +1,7 @@
 """
 Genera layout AutoCAD del puente: líneas de proyección + cotas + nombres de cepas.
 
-Wrappa `dxfstructuraljm.integration.autocad_live.AutoCADClient` si está disponible
+Wrappa `rebardxf.integration.autocad_live.AutoCADClient` si está disponible
 (DXFStructuralJm es opcional). Si no, expone una API equivalente que acepta el
 mock para tests.
 """
@@ -280,7 +280,7 @@ def export_bridge_grillage_drawings(
 ) -> dict[str, Any]:
     """Genera los planos esquemáticos de disposición general y predimensionamiento verificado
     a partir del resultado definitivo del bucle de puente (`design_result`), reutilizando
-    `draw_bridge_layout` y `dxfstructuraljm.export.{save_dxf, verify}`.
+    `draw_bridge_layout` y `rebardxf.export.{save_dxf, verify}`.
 
     - Obtiene TODOS los datos geométricos, secciones asignadas, materiales, apoyos,
       verificaciones ULS/SLS, DCRs, estado global y salvedades directamente de `design_result`,
@@ -291,7 +291,7 @@ def export_bridge_grillage_drawings(
     """
     from pathlib import Path
     import ezdxf
-    from dxfstructuraljm.export import save_dxf, verify as verify_dxf
+    from rebardxf.export import save_dxf, verify as verify_dxf
     from .revit_export import DeckGeometry
 
     out_p = Path(out_dir).expanduser().resolve()

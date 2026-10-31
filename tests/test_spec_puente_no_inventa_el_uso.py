@@ -8,11 +8,13 @@ numero pasaba a 5.0 m en silencio, y losa/pavimento/barreras/numero de vigas era
 del codigo sin declararse.
 """
 from __future__ import annotations
+import pytest as _pytest_skip
+_pytest_skip.importorskip("jmworkbench")  # dependencia externa opcional: sin ella estos tests se omiten
 
 import pytest
 
 from jmworkbench.encargo import interpretar_encargo
-from bridgejm.integration.grillage_model import bridge_spec_from_encargo
+from bridgecalc.integration.grillage_model import bridge_spec_from_encargo
 
 BASE = {"norma": "EN 1991-2", "uso": "carretera", "ancho_tablero_o_carriles": "ancho de tablero 10 m",
         "material": "acero", "apoyos": "simplemente apoyado", "galibo": "gálibo de 5,5 m", "acciones": "LM1"}

@@ -1,5 +1,5 @@
 """
-bridgejm.integration.grillage_model — Emparrillado de puente verificado para SAP2000/CSiBridge.
+bridgecalc.integration.grillage_model — Emparrillado de puente verificado para SAP2000/CSiBridge.
 
 Implementa la generacion parametrica y fisicamente consistente de un tablero de puente
 mediante modelo de emparrillado (grillage: vigas longitudinales L* x diafragmas T*):
@@ -29,9 +29,17 @@ import os
 import re
 from typing import Any
 
-from fastsap.section_catalog import IShape, get_section
-from fastsap.utils import csi_enum
-from jmstructural_common.audit_status import (
+try:  # fastsap (cliente SAP2000) es opcional: sin él, este módulo se importa pero
+    # las funciones que lo usan fallan con un mensaje claro al llamarlas.
+    from fastsap.section_catalog import IShape, get_section
+    from fastsap.utils import csi_enum
+    _HAS_FASTSAP = True
+except ImportError:  # pragma: no cover - depende del entorno
+    IShape = None  # type: ignore[assignment]
+    get_section = None  # type: ignore[assignment]
+    csi_enum = None  # type: ignore[assignment]
+    _HAS_FASTSAP = False
+from bridgecalc._common.audit_status import (
     CalculationStatus,
     aggregate_calculation_statuses,
     resolve_status,
@@ -3694,7 +3702,7 @@ def compute_bridge_sustainability_and_cost(
     y huella de carbono embebido + calificación SCORS (CarbonFootprintJm.lca) para una configuración
     de emparrillado de puente.
     """
-    from steeloptimizerjm.cost_by_country import estimate_cost, get_cost
+    from paretosteel.cost_by_country import estimate_cost, get_cost
     from carbonfootprintjm.lca import (
         StructuralElementInput,
         StructuralLcaInput,
