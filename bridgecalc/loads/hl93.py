@@ -195,15 +195,17 @@ def hl93_influence_envelope(cfg: HL93Configuration) -> HL93Result:
 
 
 # ---------------------------------------------------------------
-# HL-93K variante chilena NCh 3171 — camion de 44 ton
+# Camion chileno de 44 ton (variante del HL-93)
 # ---------------------------------------------------------------
-# NCh 3171.Of2010 / Manual de Carreteras MOP Chile, Vol. 3 Cap. 3.1004
+# Atribuido al Manual de Carreteras MOP Chile, Vol. 3 Cap. 3.1004 (sin contrastar en este paquete).
+# Los nombres NCH_* / hl93k_nch_* se conservan por compatibilidad, pero NCh 3171.Of2010 es la
+# norma chilena de disposiciones generales y COMBINACIONES de carga, no define este camion.
 # Camion tipo: 3 ejes, peso bruto 432 kN (44 ton)
 #   Eje delantero:  62 kN
 #   Eje central:    185 kN  (a 4.0 m del delantero)
 #   Eje trasero:    185 kN  (a 4.0 m del central)
 # Carril equivalente: 9.34 kN/m (mismo que AASHTO)
-# IM = 0.25 para estado limite de resistencia (NCh 3171)
+# IM = 0.25 para estado limite de resistencia
 NCH_TRUCK_AXLES_kN = (62.0, 185.0, 185.0)
 NCH_TRUCK_AXLE_SPACINGS_m = (4.0, 4.0)
 NCH_LANE_LOAD_kN_per_m = 9.34
@@ -212,7 +214,7 @@ NCH_IMPACT_FACTOR = 1.25
 
 @dataclass(frozen=True)
 class HL93KNChConfiguration:
-    """Configuracion para camion NCh 3171 (Chile, 44 ton)."""
+    """Configuracion para el camion chileno de 44 ton (62/185/185 kN, IM 0.25)."""
     span_m: float
     n_points: int = 200
     impact_factor: float = NCH_IMPACT_FACTOR

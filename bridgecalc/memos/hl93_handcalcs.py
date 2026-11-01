@@ -47,6 +47,7 @@ class HL93HandcalcsResult:
     governing_vehicle: str
     latex: str
     markdown: str
+    latex_engine: str = "manual"     # "handcalcs" si el render de handcalcs funcionó; "manual" si no
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -60,6 +61,7 @@ class HL93HandcalcsResult:
             "M_Strength_I_kNm": self.M_Strength_I_kNm,
             "governing_vehicle": self.governing_vehicle,
             "latex": self.latex,
+            "latex_engine": self.latex_engine,
             "markdown": self.markdown,
         }
 
@@ -108,40 +110,49 @@ def _try_handcalcs_render(inp: HL93HandcalcsInput,
                            M_truck: float, M_tandem: float,
                            M_lane: float, IM: float,
                            M_vehicle: float, M_LL_IM: float,
-                           M_str: float) -> str:
-    """Intenta usar handcalcs para el render; fallback a LaTeX manual."""
+                           M_str: float) -> tuple[str, str]:
+    """Render con el decorador de handcalcs; si no está instalado o falla, LaTeX manual.
+
+    Devuelve (latex, motor). Se importa ``handcalcs.decorator`` y no ``handcalcs.render``: este último
+    llama a ``get_ipython()`` al importarse y solo funciona dentro de Jupyter. Hasta la versión 1.1.0
+    se importaba ``handcalcs.render`` y la excepción se tragaba, así que fuera de Jupyter siempre salía
+    el LaTeX manual aunque handcalcs estuviera instalado.
+    """
+    fallback = _fallback_latex(inp, M_DC, M_DW, M_truck, M_tandem, M_lane, IM, M_vehicle, M_LL_IM, M_str)
     try:
-        import handcalcs.render  # noqa: F401
-        from handcalcs import handcalc
-
-        # Build a handcalcs-rendered string
-        L = inp.L_span_m
-        w_DC = inp.DC_kN_m
-        w_DW = inp.DW_kN_m
-        gamma_DC = inp.gamma_DC
-        gamma_DW = inp.gamma_DW
-        gamma_LL = inp.gamma_LL
+        from handcalcs.decorator import handcalc
+    except ImportError:
+        return fallback, "manual"
+    try:
+        @handcalc()
+        def _dead_loads(L, w_DC, w_DW):
+            M_DC = w_DC * L ** 2 / 8
+            M_DW = w_DW * L ** 2 / 8
+            return M_DC, M_DW
 
         @handcalc()
-        def _dc():
-            M_DC_calc = w_DC * L ** 2 / 8  # noqa: F841
-            return M_DC_calc
+        def _live_load(M_truck, M_tandem, IM, M_lane, MPF):
+            M_vehicle = max(M_truck, M_tandem) * IM
+            M_LL_IM = (M_vehicle + M_lane) * MPF
+            return M_LL_IM
 
         @handcalc()
-        def _strength():
-            M_Strength_I = gamma_DC * M_DC + gamma_DW * M_DW + gamma_LL * M_LL_IM  # noqa: F841
-            return M_Strength_I
+        def _strength_I(gamma_DC, M_DC, gamma_DW, M_DW, gamma_LL, M_LL_IM):
+            M_u = gamma_DC * M_DC + gamma_DW * M_DW + gamma_LL * M_LL_IM
+            return M_u
 
-        latex_dc = _dc()[0]
-        latex_str = _strength()[0]
-        return latex_dc + "\n\n" + latex_str
-
-    except Exception:
-        pass
-
-    # Fallback: LaTeX manual
-    return _fallback_latex(inp, M_DC, M_DW, M_truck, M_tandem,
-                            M_lane, IM, M_vehicle, M_LL_IM, M_str)
+        parts = [
+            r"\section*{Memoria LRFD HL-93 (handcalcs) -- Strength I}",
+            r"\subsection*{Cargas muertas}",
+            _dead_loads(inp.L_span_m, inp.DC_kN_m, inp.DW_kN_m)[0],
+            r"\subsection*{Carga viva HL-93 con impacto}",
+            _live_load(M_truck, M_tandem, IM, M_lane, inp.MPF)[0],
+            r"\subsection*{Strength I}",
+            _strength_I(inp.gamma_DC, M_DC, inp.gamma_DW, M_DW, inp.gamma_LL, M_LL_IM)[0],
+        ]
+        return "\n\n".join(parts), "handcalcs"
+    except Exception:  # pragma: no cover - depende de la versión de handcalcs
+        return fallback, "manual"
 
 
 def _fallback_latex(inp: HL93HandcalcsInput,
@@ -224,7 +235,7 @@ def generar_memoria_handcalcs(inp: HL93HandcalcsInput) -> HL93HandcalcsResult:
     M_str = inp.gamma_DC * M_DC + inp.gamma_DW * M_DW + inp.gamma_LL * M_LL_IM
 
     # Render
-    latex = _try_handcalcs_render(
+    latex, engine = _try_handcalcs_render(
         inp, M_DC, M_DW, M_truck, M_tandem, M_lane, IM,
         M_vehicle, M_LL_IM, M_str,
     )
@@ -263,6 +274,7 @@ def generar_memoria_handcalcs(inp: HL93HandcalcsInput) -> HL93HandcalcsResult:
         governing_vehicle=governing,
         latex=latex,
         markdown=md,
+        latex_engine=engine,
     )
 
 

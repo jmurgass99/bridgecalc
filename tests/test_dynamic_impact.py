@@ -17,9 +17,14 @@ def test_aashto_im_default():
 def test_im_multi_code():
     assert dynamic_load_allowance(code="NSR") == pytest.approx(0.33)
     assert dynamic_load_allowance(code="AS") == pytest.approx(0.30)
-    # Eurocode depende de luz; debe estar entre 0 y 0.67
-    im_eu = dynamic_load_allowance(code="EU", span_m=20.0)
-    assert 0.0 < im_eu < 0.7
+    # EN 1991-2: LM1/LM2 ya incluyen la amplificación dinámica -> IM = 0 en carretera
+    assert dynamic_load_allowance(code="EU", span_m=20.0) == 0.0
+    assert dynamic_load_allowance(code="SG") == 0.0
+    # El factor ferroviario φ2 (EN 1991-2 §6.4.5.2) sigue disponible: L=20 m -> 1.44/(4.472-0.2)+0.82 = 1.157
+    assert dynamic_load_allowance(code="EU_RAIL", span_m=20.0) == pytest.approx(0.157, abs=1e-3)
+    assert dynamic_load_allowance(code="EU_RAIL", span_m=3.0) == pytest.approx(0.67, abs=1e-9)   # 1.44/(1.732-0.2)+0.82 = 1.76 -> tope 1.67
+    with pytest.raises(ValueError):
+        dynamic_load_allowance(code="EU_RAIL")
     with pytest.raises(ValueError):
         dynamic_load_allowance(code="ZZ")
 
@@ -38,6 +43,7 @@ def test_wind_eurocode_and_combined():
     truck_dyn, wline, total = combined_dynamic_truck_wind(
         static_truck_kN=500.0, span_m=25.0, wind=w
     )
-    assert truck_dyn > 500.0
+    # Con EN 1991-2 el camión no se mayora por IM (LM1 ya lo incluye)
+    assert truck_dyn == pytest.approx(500.0)
     assert wline > 0.0
     assert total > truck_dyn

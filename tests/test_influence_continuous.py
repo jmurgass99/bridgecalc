@@ -182,9 +182,16 @@ class TestTwoSpanSupportMomentILGolden:
     def test_pico_ordenada_y_posicion_vanos_iguales(self, L):
         """El pico (minimo) de la LI coincide con -L/(6*sqrt(3)) en a=L/sqrt(3)."""
         il = two_span_continuous_M_at_support(L, L, n_points=400)
-        i_min = int(np.argmin(il.ordinates))
+        # Desde 1.1.0 la LI es simetrica respecto al apoyo central (antes el segundo vano
+        # estaba reflejado): hay dos minimos iguales, en a* del extremo A y en a* del extremo C.
+        # Se mira el del primer vano y se comprueba el espejo en el segundo.
+        mask1 = il.x_m <= L
+        i_min = int(np.argmin(np.where(mask1, il.ordinates, 0.0)))
         eta_min = float(il.ordinates[i_min])
         x_min = float(il.x_m[i_min])
+        i_min2 = int(np.argmin(np.where(~mask1, il.ordinates, 0.0)))
+        assert float(il.x_m[i_min2]) == pytest.approx(2.0 * L - self.A_STAR_OVER_L * L, abs=L / 200.0 + 0.05)
+        assert float(il.ordinates[i_min2]) == pytest.approx(eta_min, rel=1e-3)
 
         # Valor del pico: ancla publicada -0.096225*L (tol 0.5 % por malla)
         assert eta_min == pytest.approx(self.ETA_STAR_OVER_L * L, rel=5e-3)

@@ -49,4 +49,5 @@ class TestFragility:
         ims = np.array([0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
         dam = np.array([False, False, False, True, True, True, True, True, True])
         c = lognormal_fragility(ims, dam)
-        assert 0.4 < c.median < 1.2
+        # separación perfecta entre 0,4 y 0,5 g: la mediana MLE cae entre los dos grupos
+        assert 0.4 <= c.median <= 0.5

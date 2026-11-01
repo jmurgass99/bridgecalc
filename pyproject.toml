@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bridgecalc"
-version = "1.0.0"
-description = "Bridge design and load rating: AASHTO LRFD (HL-93, superstructure, box girders), EN 1991-2 traffic models (LM1-LM3), IAP-11, NCh, distribution factors, influence lines, load combinations, EC8 ductility, pier pushover and fragility curves."
+version = "1.1.0"
+description = "Bridge traffic loads and checks: AASHTO HL-93 envelopes on simple and continuous spans by influence lines, EN 1991-2 LM1/LM2, IAP-11, distribution factors, LRFR load rating, AASHTO and EN 1990 combinations, box girders, EN 1998-2 ductility, pier pushover, fragility, grillage for SAP2000, Revit/AutoCAD export, REST API."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Jesús Murgas" }]
-keywords = ["bridge", "aashto-lrfd", "hl-93", "en-1991-2", "load-rating", "influence-lines", "fragility", "structural-engineering"]
+keywords = ["bridge", "bridge-engineering", "aashto-lrfd", "hl-93", "en-1991-2", "iap-11", "load-rating", "lrfr", "influence-lines", "continuous-beam", "box-girder", "eurocode", "ec8", "pier-pushover", "fragility", "seismic", "structural-engineering", "loadpath"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",

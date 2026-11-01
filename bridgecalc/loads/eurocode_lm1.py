@@ -25,6 +25,8 @@ from typing import Any
 
 import numpy as np
 
+from .iap11 import tandem_bending_moment_barre, tandem_shear_force_support
+
 # ---------------------------------------------------------------
 # LM1 constantes (EN 1991-2 Table 4.2)
 # ---------------------------------------------------------------
@@ -139,14 +141,17 @@ def evaluate_eurocode_lm1(inp: EurocodeLM1Input) -> EurocodeLM1Result:
         # exacto, y por encima del maximo fisico alcanzable con esas dos
         # cargas -- verificado: para L=30, d=1.2 daba 14.976*P, mas que el
         # maximo real 14.406*P, un exceso del 3.96% (fisicamente imposible).
+        # Desde 1.1.0 momento y cortante salen de las mismas funciones que IAP-11 y ec1_traffic:
+        #  - L >= (1 + 1/sqrt(2))·d = 2,05 m: Barré, Q·((L − d)/2 + d²/(8L));
+        #  - L < 2,05 m: un solo eje centrado, Q·L/4 (antes Q·L/2 para L <= d, el doble, y la
+        #    fórmula de dos ejes entre 1,2 y 2,05 m, por debajo del eje único);
+        #  - cortante: un eje sobre el apoyo y el otro a d, Q·(2 − d/L) (antes 2Q, con los dos
+        #    ejes a la vez sobre el apoyo, físicamente imposible: +2 % en 30 m, +6 % en 20 m).
         d = LM1_TS_AXLE_SPACING_m
-        if L > d:
-            M_ts_lane = Q_eff * ((L - d) / 2.0 + (d ** 2) / (8.0 * L))
-        else:
-            M_ts_lane = Q_eff * L / 2.0
+        M_ts_lane = tandem_bending_moment_barre(Q_eff, L, d)
 
         M_TS += M_ts_lane
-        V_TS += 2.0 * Q_eff  # cortante max en apoyo
+        V_TS += tandem_shear_force_support(Q_eff, L, d)
         total_TS_load += 2.0 * Q_eff
 
         # UDL per lane

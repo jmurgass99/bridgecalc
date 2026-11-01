@@ -68,8 +68,9 @@ def concrete_box_girder_shear(
     beta = 2.0
     theta_deg = 36.0
 
-    # Vc = 0.0316 * beta * sqrt(f'c) * bv * dv [N]
-    Vc_N = 0.0316 * beta * math.sqrt(f_c_MPa) * b_w_mm * dv_mm
+    # Vc = 0.083 * beta * sqrt(f'c) * bv * dv [N, MPa, mm] (Ec. 5.7.3.3-3 en SI; 0.0316 es el
+    # coeficiente con f'c en ksi y medidas en pulgadas: hasta 1.0 se usaba aquí y V_c salía 2,63 veces menor)
+    Vc_N = 0.083 * beta * math.sqrt(f_c_MPa) * b_w_mm * dv_mm
     Vc_kN = Vc_N * 1e-3
 
     # Vs = Av * fy * dv * cot(theta) / s [N]

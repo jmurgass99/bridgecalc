@@ -28,19 +28,27 @@ def dynamic_load_allowance(
     Parameters
     ----------
     component: 'deck_joints' | 'fatigue' | 'other'
-    code: 'AASHTO' | 'EU' | 'NSR' | 'AS' | 'SG'
-    span_m: luz para códigos que dependen de L (Eurocode dyn factor).
+    code: 'AASHTO' | 'EU' | 'EU_RAIL' | 'NSR' | 'AS' | 'SG'
+    span_m: longitud determinante LΦ [m] para 'EU_RAIL' (EN 1991-2 §6.4.5.2).
+
+    Tráfico de carretera según EN 1991-2 ('EU', 'SG'): los modelos LM1 y LM2 YA incluyen la
+    amplificación dinámica (EN 1991-2 §4.3.1 y §4.3.2), así que IM = 0. Hasta la versión 1.0 esta
+    función devolvía para 'EU' el factor dinámico FERROVIARIO φ2 − 1 (entre 0,03 y 0,67 según la
+    luz), que es de vía con mantenimiento cuidadoso (§6.4.5.2) y no se aplica a carretera; sigue
+    disponible con code='EU_RAIL'.
     """
     c = code.upper()
     if c in ("AASHTO", "USA"):
         return _AASHTO_IM.get(component, 0.33)
-    if c in ("EU", "EUROCODE"):
-        # Eurocode 1991-2 Anejo B: phi2 simplificado dependiendo de luz.
-        # phi2 = 1.44/(sqrt(L)-0.2)+0.82 acotado [1.0,1.67] - 1.0 = IM
+    if c in ("EU", "EUROCODE", "SG", "SS"):
+        return 0.0
+    if c in ("EU_RAIL", "EUROCODE_RAIL"):
+        # EN 1991-2 §6.4.5.2 (3), vía con mantenimiento cuidadoso: φ2 = 1.44/(sqrt(LΦ) − 0.2) + 0.82,
+        # acotado 1.00 <= φ2 <= 1.67. IM = φ2 − 1.
         if span_m <= 0.0:
-            return 0.25
+            raise ValueError("EU_RAIL necesita span_m > 0 (longitud determinante LΦ)")
         import math
-        phi2 = 1.44 / (math.sqrt(max(span_m, 1.0)) - 0.2) + 0.82
+        phi2 = 1.44 / (math.sqrt(span_m) - 0.2) + 0.82
         phi2 = max(1.0, min(1.67, phi2))
         return phi2 - 1.0
     if c in ("NSR", "CO"):
@@ -49,9 +57,6 @@ def dynamic_load_allowance(
     if c in ("AS", "AU"):
         # AS 5100.2 — dynamic load allowance ~0.30 para SM1600
         return 0.30
-    if c in ("SG", "SS"):
-        # Singapore adopta BS/Eurocode: similar a EU
-        return 0.25
     raise ValueError(f"Código desconocido: {code}")
 
 

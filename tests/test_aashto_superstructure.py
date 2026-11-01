@@ -37,12 +37,12 @@ class TestAASHTOSuperstructure:
         # Cortante: demanda Vu=300 kN
         # fc=30 MPa, bw=600 mm, d=900 mm, Av=400 mm² (e.g. estribos de 2 ramas d=16), s=200 mm
         # dv = 0.9 * 900 = 810 mm
-        # Vc = 0.0316 * 2.0 * sqrt(30) * 600 * 810 * 1e-3 = 168.22 kN
-        # Vs = (400 * 500 * 810 * 1.3764 * 1e-3) / 200 = 1114.88 kN
+        # Vc = 0.083 * 2.0 * sqrt(30) * 600 * 810 * 1e-3 = 441.88 kN  (coeficiente SI; 0.0316 es con ksi)
+        # Vs = (400 * 500 * 810 * 1.3764 * 1e-3) / 200 = 1114.87 kN
         # Vn_max = 0.25 * 30 * 600 * 810 * 1e-3 = 3645 kN
-        # Vn = min(Vc + Vs, Vn_max) = 168.22 + 1114.88 = 1283.1 kN
-        # Vr = 0.9 * 1283.1 = 1154.79 kN
-        # DCR = 300 / 1154.79 = 0.2598
+        # Vn = min(Vc + Vs, Vn_max) = 441.88 + 1114.87 = 1556.75 kN
+        # Vr = 0.9 * 1556.75 = 1401.08 kN
+        # DCR = 300 / 1401.08 = 0.2141
         dcr = concrete_box_girder_shear(
             V_u_kN=300.0,
             f_c_MPa=30.0,
@@ -53,12 +53,12 @@ class TestAASHTOSuperstructure:
             f_y_MPa=500.0,
             phi=0.90,
         )
-        assert dcr == pytest.approx(0.2598, abs=1e-3)
+        assert dcr == pytest.approx(0.2141, abs=1e-3)
 
     def test_box_girder_shear_no_stirrups(self):
         # Sin estribos (Av = 0), solo Vc aporta resistencia
-        # Vc = 168.22 kN, Vr = 0.9 * 168.22 = 151.40 kN
-        # DCR = 200 / 151.40 = 1.321
+        # Vc = 441.88 kN, Vr = 0.9 * 441.88 = 397.69 kN
+        # DCR = 200 / 397.69 = 0.5029
         dcr = concrete_box_girder_shear(
             V_u_kN=200.0,
             f_c_MPa=30.0,
@@ -69,4 +69,4 @@ class TestAASHTOSuperstructure:
             f_y_MPa=500.0,
             phi=0.90,
         )
-        assert dcr == pytest.approx(1.321, abs=1e-3)
+        assert dcr == pytest.approx(0.5029, abs=1e-3)

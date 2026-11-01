@@ -8,8 +8,11 @@ LM1 = tándem (TS) + uniformly distributed load (UDL).
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any
+
+from .eurocode_lm1 import EurocodeLM1Input, evaluate_eurocode_lm1
 
 # Tabla 4.2 EN 1991-2
 TS_AXLES_kN = [300.0, 200.0, 100.0]    # carril 1, 2, 3
@@ -48,46 +51,36 @@ class LM1Result:
 
 
 def evaluate_lm1(inp: LM1Input) -> LM1Result:
-    """Envolvente LM1 para viga simple."""
+    """Envolvente LM1 para viga simple (módulo de compatibilidad; obsoleto).
+
+    Delega en :func:`bridgecalc.loads.eurocode_lm1.evaluate_eurocode_lm1`. Hasta la versión 1.0 el
+    momento del tándem se calculaba como ``2·Q·L/8·(1 − (0,6/L)²)``, que es la fórmula de una carga
+    REPARTIDA aplicada a dos cargas puntuales: para L = 30 m y dos carriles daba M_TS = 3748 kN·m
+    frente a los 7203 kN·m del teorema de Barré (−48 %, del lado inseguro). ``alpha_qr`` se aplica al
+    tándem y a la carga repartida de los carriles restantes, como hacía este módulo.
+    """
+    warnings.warn(
+        "bridgecalc.loads.eurocode.evaluate_lm1 está obsoleto: usa "
+        "bridgecalc.loads.eurocode_lm1.evaluate_eurocode_lm1",
+        DeprecationWarning, stacklevel=2,
+    )
     if inp.span_m <= 0 or inp.carriageway_width_m <= 0:
         raise ValueError("span_m y carriageway_width_m deben ser > 0")
-    if inp.n_lanes is None:
-        n_lanes = int(min(inp.carriageway_width_m // NOTIONAL_LANE_WIDTH_m, 3))
-        n_lanes = max(n_lanes, 1)
-    else:
-        n_lanes = int(inp.n_lanes)
-
-    # Tándem (suma por carril, todas las cargas centradas en mid-span = max M)
-    L = inp.span_m
-    M_TS = 0.0
-    V_TS_max = 0.0
-    for i in range(n_lanes):
-        Q = TS_AXLES_kN[min(i, 2)]
-        alpha = inp.alpha_Q1 if i == 0 else inp.alpha_qr
-        # 2 ejes a 1.2 m de separación → para luz larga ≈ 2·Q
-        # M_max = (2Q·L)/8 · (1 - a²/L²) con a = 0.6 m
-        M_lane = alpha * 2 * Q * L / 8 * (1 - (0.6 / L) ** 2) if L > 0.6 else \
-                 alpha * 2 * Q * L / 8
-        M_TS += M_lane
-        V_TS_max += alpha * 2 * Q  # cortante max en apoyo
-
-    # UDL
-    M_UDL = 0.0
-    V_UDL = 0.0
-    for i in range(n_lanes):
-        q = UDL_kN_per_m2[min(i, 2)]
-        alpha = inp.alpha_q1 if i == 0 else inp.alpha_qr
-        # Carril 3 m de ancho, viga toma 1 carril
-        w = alpha * q * NOTIONAL_LANE_WIDTH_m  # kN/m
-        M_UDL += w * L ** 2 / 8
-        V_UDL += w * L / 2
-
+    r = evaluate_eurocode_lm1(EurocodeLM1Input(
+        carriageway_width_m=inp.carriageway_width_m,
+        span_m=inp.span_m,
+        alpha_Q1=inp.alpha_Q1,
+        alpha_q1=inp.alpha_q1,
+        alpha_Qr=inp.alpha_qr,
+        alpha_qr=inp.alpha_qr,
+        n_lanes=inp.n_lanes,
+    ))
     return LM1Result(
-        n_lanes=n_lanes,
-        M_TS_kNm=M_TS,
-        M_UDL_kNm=M_UDL,
-        M_total_kNm=M_TS + M_UDL,
-        V_max_kN=V_TS_max + V_UDL,
+        n_lanes=r.n_lanes,
+        M_TS_kNm=r.M_TS_kNm,
+        M_UDL_kNm=r.M_UDL_kNm,
+        M_total_kNm=r.M_total_kNm,
+        V_max_kN=r.V_total_kN,
     )
 
 

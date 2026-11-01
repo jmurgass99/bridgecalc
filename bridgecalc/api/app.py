@@ -1,6 +1,8 @@
 """FastAPI app para BridgeCalc — HL-93 envelope + fragilidad."""
 from typing import Any
 
+from .. import __version__
+
 
 def create_router() -> Any:
     """Devuelve el APIRouter con los endpoints. Mountable en gateway."""
@@ -35,10 +37,10 @@ def create_router() -> Any:
 
     class MultiSpanPayload(BaseModel):
         span_m: float = Field(..., gt=0)
-        n_spans: int = Field(..., ge=2, le=3)
+        n_spans: int = Field(..., ge=2, le=6)
         impact_factor: float = Field(1.33, gt=0)
 
-    @router.post("/api/bridge/hl93/multispan", summary="Tren de cargas HL-93 en puente continuo multivano según AASHTO LRFD §3.6.1")
+    @router.post("/api/bridge/hl93/multispan", summary="Envolvente HL-93 en viga continua de 2 a 6 vanos iguales por líneas de influencia (AASHTO LRFD §3.6.1.3)")
     def hl93_multispan(payload: MultiSpanPayload) -> dict[str, Any]:
         try:
             r = envelope_multispan(MultiSpanInput(**payload.model_dump()))
@@ -125,6 +127,6 @@ def create_app() -> Any:
     """App FastAPI standalone."""
     from fastapi import FastAPI
 
-    app = FastAPI(title="BridgeCalc API", version="0.1.0")
+    app = FastAPI(title="BridgeCalc API", version=__version__)
     app.include_router(create_router())
     return app

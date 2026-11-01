@@ -24,7 +24,6 @@ RESISTANCE_FACTORS = {
 
 # Factores de carga AASHTO LRFD Tabla 3.4.1-1
 @dataclass(frozen=True)
-@dataclass
 class LRFDLoadCombination:
     name: str
     DC: float       # Peso propio componentes estructurales y accesorios

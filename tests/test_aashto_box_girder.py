@@ -53,7 +53,7 @@ class TestShear:
     def test_formula_Vc(self):
         s = _sec()
         r = shear_strength(s, Vu_kN=1.0, Av_mm2=1600.0, s_mm=150.0, beta=2.0)
-        Vc = 0.0316 * 2.0 * math.sqrt(s.fc_MPa) * s.bv_mm * s.dv_mm / 1e3
+        Vc = 0.083 * 2.0 * math.sqrt(s.fc_MPa) * s.bv_mm * s.dv_mm / 1e3   # SI (0.0316 es con f'c en ksi)
         assert r.Vc_kN == pytest.approx(Vc, rel=1e-6)
 
     def test_mas_estribos_mas_Vs(self):

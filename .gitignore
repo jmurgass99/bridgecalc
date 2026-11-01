@@ -10,3 +10,6 @@ dist/
 # herramientas locales de agentes
 .claude-flow/
 .claude/
+
+# salidas de ficheros de los ejemplos (DXF, JSON, scripts pyRevit, memorias)
+examples/out/

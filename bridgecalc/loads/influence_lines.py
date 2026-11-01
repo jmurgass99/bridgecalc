@@ -59,9 +59,13 @@ def two_span_continuous_M_at_support(L1: float, L2: float,
             # Müller-Breslau: η = -a·b·(L1+a)/(2·L1·(L1+L2))
             eta[i] = -a * b * (L1 + a) / (2 * L1 * total)
         else:
+            # Segundo vano: la distancia que entra en la ecuacion de los tres momentos es la
+            # medida desde el apoyo LEJANO (extremo derecho C): c = L2 - a. Hasta la version 1.0
+            # se usaba (L2 + a) con a medida desde el apoyo central, lo que reflejaba la linea de
+            # influencia dentro del segundo vano (pico en L1 + 0.577 L2 en vez de L1 + 0.423 L2).
             a = xi - L1
             b = L2 - a
-            eta[i] = -a * b * (L2 + a) / (2 * L2 * total)
+            eta[i] = -a * b * (L2 + b) / (2 * L2 * total)
     return InfluenceLine(x_m=x, ordinates=eta, quantity="M", location_m=L1)
 
 
@@ -171,35 +175,32 @@ def influence_line_continuous(
             if k < n_int - 1:
                 A[k, k + 1] = L_r
 
-            # RHS: Three-moment equation for P=1
-            # For support k (between span i_left and i_right):
-            #   RHS = -6 * [A_left * a_bar_left / L_left
-            #              + A_right * b_bar_right / L_right]
-            # For a point load P=1 at distance 'a' from the left end
-            # of a span of length L:
-            #   6*A*a_bar/L = P*b*(L^2 - b^2) / L   (contrib to RIGHT support)
-            #   6*A*b_bar/L = P*a*(L^2 - a^2) / L   (contrib to LEFT support)
-            # where b = L - a.
-            #
-            # Left span contributes to this support via the RIGHT end:
-            #   term = P * b * (L^2 - b^2) / L  with a=x_P-x_start, b=L-a
-            # Right span contributes to this support via the LEFT end:
-            #   term = P * a * (L^2 - a^2) / L  with a=x_P-x_start_right
+            # RHS de la ecuacion de los tres momentos (Clapeyron) para P = 1:
+            #   L_l*M_{k-1} + 2(L_l+L_r)*M_k + L_r*M_{k+1} = -6*A_l*a_bar_l/L_l - 6*A_r*b_bar_r/L_r
+            # donde a_bar_l se mide desde el apoyo LEJANO del tramo izquierdo (su extremo
+            # izquierdo) y b_bar_r desde el apoyo LEJANO del tramo derecho (su extremo derecho).
+            # Para una carga puntual P a distancia 'a' del extremo izquierdo de un tramo L
+            # (b = L - a):   6*A*a_bar/L = P*a*(L^2 - a^2)/L   y   6*A*b_bar/L = P*b*(L^2 - b^2)/L.
+            # Comprobacion: dos vanos iguales -> M_k = -P*a*(L^2 - a^2)/(4 L^2), con pico en
+            # a = L/sqrt(3) = 0.577 L medido desde el extremo libre, que es la forma cerrada de
+            # ``two_span_continuous_M_at_support``. Hasta la version 1.0 se usaban las distancias al
+            # apoyo CERCANO (a y b intercambiadas): la linea de influencia salia reflejada dentro de
+            # cada vano (pico en 0.423 L) y con luces desiguales daba valores erroneos.
             rhs_val = 0.0
-            # Tramo izquierdo (load contributes to the right support of this span)
+            # Tramo izquierdo: distancia 'a' desde su extremo izquierdo (apoyo lejano)
             x_start_l = supports[i_left]
             x_end_l = supports[i_left + 1]
             if x_start_l <= x_P <= x_end_l:
                 a_loc = x_P - x_start_l
-                b_loc = L_l - a_loc
-                rhs_val -= b_loc * (L_l ** 2 - b_loc ** 2) / L_l
+                rhs_val -= a_loc * (L_l ** 2 - a_loc ** 2) / L_l
 
-            # Tramo derecho (load contributes to the left support of this span)
+            # Tramo derecho: distancia 'b' desde su extremo derecho (apoyo lejano)
             x_start_r = supports[i_right]
             x_end_r = supports[i_right + 1]
             if x_start_r <= x_P <= x_end_r:
                 a_loc = x_P - x_start_r
-                rhs_val -= a_loc * (L_r ** 2 - a_loc ** 2) / L_r
+                b_loc = L_r - a_loc
+                rhs_val -= b_loc * (L_r ** 2 - b_loc ** 2) / L_r
 
             b_rhs[k] = rhs_val
 

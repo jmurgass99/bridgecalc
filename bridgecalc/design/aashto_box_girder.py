@@ -74,11 +74,14 @@ def shear_strength(sec: BoxGirderSection, Vu_kN: float, Av_mm2: float, s_mm: flo
                    beta: float = 2.0, theta_deg: float = 36.0, phi: float = 0.90) -> ShearResult:
     """Resistencia a cortante (AASHTO §5.7.3, MCFT simplificado).
 
-    Vc = 0.0316·beta·sqrt(f'c)·bv·dv ; Vs = Av·fy·dv·cot(theta)/s ;
+    Vc = 0.083·beta·sqrt(f'c)·bv·dv [N, MPa, mm] ; Vs = Av·fy·dv·cot(theta)/s ;
     Vn = min(Vc+Vs, 0.25 f'c bv dv). beta y theta del método simplificado.
+
+    0.083 es el coeficiente SI de la Ec. 5.7.3.3-3 (0.0316 con f'c en ksi y medidas en pulgadas).
+    Hasta la versión 1.0 se usaba 0.0316 con f'c en MPa: V_c salía 2,63 veces menor.
     """
     fc, bv, dv = sec.fc_MPa, sec.bv_mm, sec.dv_mm
-    Vc = 0.0316 * beta * math.sqrt(fc) * bv * dv          # N
+    Vc = 0.083 * beta * math.sqrt(fc) * bv * dv           # N
     cot = 1.0 / math.tan(math.radians(theta_deg))
     Vs = (Av_mm2 * sec.fy_MPa * dv * cot / s_mm) if s_mm else 0.0
     Vmax = 0.25 * fc * bv * dv
@@ -96,11 +99,13 @@ class PrincipalStressResult:
 
 
 def principal_stress_web(fpc_MPa: float, v_MPa: float, fc_MPa: float,
-                         factor: float = 0.110) -> PrincipalStressResult:
+                         factor: float = 0.29) -> PrincipalStressResult:
     """Tracción principal en el alma (AASHTO §5.9.2.3.3 para Service III en segmentales).
 
     sigma_1 = fpc/2 − sqrt((fpc/2)^2 + v^2)  (tracción negativa).
-    Límite de tracción principal ~ 0.110·sqrt(f'c) MPa. fpc = compresión axial neta (>0).
+    Límite de tracción principal 0.29·sqrt(f'c) MPa (0.110·sqrt(f'c) con f'c en ksi). fpc = compresión
+    axial neta (>0). Hasta la versión 1.0 el factor por defecto era 0.110 aplicado a f'c en MPa, un
+    límite 2,63 veces más estricto que el de la norma.
     """
     half = fpc_MPa / 2.0
     sigma_1 = half - math.sqrt(half ** 2 + v_MPa ** 2)     # negativo = tracción
