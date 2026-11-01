@@ -1,5 +1,7 @@
 # bridgecalc — cargas de tráfico, envolventes y comprobaciones de puentes en Python
 
+**Español** · [English](README.en.md) · [Português](README.pt.md) · [Italiano](README.it.md)
+
 Envolventes HL-93 de AASHTO LRFD en vano simple y en vigas continuas por líneas de influencia, modelos de carga LM1, LM2 y LM3 de EN 1991-2, IAP-11 española, camión chileno de 44 t, factores de distribución, combinaciones AASHTO y EN 1990, calificación de carga LRFR, vigas cajón y llaves de cortante, espectro AASHTO, empujes de Mononobe-Okabe, ductilidad EN 1998-2, pushover de pilas, fragilidad sísmica, disipador Bouc-Wen, emparrillado para SAP2000 y exportación a Revit y AutoCAD. Única dependencia: `numpy`.
 
 [![CI](https://github.com/jmurgass99/bridgecalc/actions/workflows/ci.yml/badge.svg)](https://github.com/jmurgass99/bridgecalc/actions/workflows/ci.yml)
