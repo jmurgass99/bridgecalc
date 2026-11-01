@@ -662,7 +662,8 @@ def test_bridge_grillage_30m_live_sap2000(tmp_path):
     # Persistir el .sdb y el reporte JSON de evidencias para inspeccion auditable
     import json
     import shutil
-    artifact_dir = Path(r"C:\Users\jesus\.gemini\antigravity\brain\7806a750-479b-4040-af0a-39e35ddb12b8\scratch")
+    import tempfile
+    artifact_dir = Path(tempfile.gettempdir()) / "bridgecalc_artifacts"
     artifact_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(res["sdb_path"], artifact_dir / "puente_30m_emparrillado_sap2000_v26.sdb")
     (artifact_dir / "puente_30m_emparrillado_sap2000_v26_report.json").write_text(
@@ -1515,7 +1516,8 @@ def test_bridge_grillage_30m_closed_loop_resize_live_sap2000(tmp_path):
         assert eq["rel_error"] < 1e-4
 
     # Persistir artefactos finales auditables
-    artifact_dir = Path(r"C:\Users\jesus\.gemini\antigravity\brain\7806a750-479b-4040-af0a-39e35ddb12b8\scratch")
+    import tempfile
+    artifact_dir = Path(tempfile.gettempdir()) / "bridgecalc_artifacts"
     artifact_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(res["sdb_path"], artifact_dir / "puente_30m_emparrillado_redimensionado_sap2000_v26.sdb")
     (artifact_dir / "puente_30m_emparrillado_redimensionado_sap2000_v26_report.json").write_text(
