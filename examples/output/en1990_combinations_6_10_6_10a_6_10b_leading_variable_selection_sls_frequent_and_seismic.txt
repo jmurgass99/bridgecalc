@@ -1,0 +1,23 @@
+Permanentes (kN·m por tablero): {'tablero': 1800.0, 'pavimento+barreras': 320.0}; γ_G = 1.35 desfavorable, ξ = 0.85
+
+1) Tabla de edificación (A1.1) tal como viene en el módulo, γ_Q = 1,50:
+  ULS 6.10 :     6408 kN·m
+  ULS 6.10a:     5463 kN·m
+  ULS 6.10b:     5979 kN·m
+  gobernante del set alternativo máx(6.10a, 6.10b): 5979 kN·m
+  SLS characteristic  :     4484 kN·m
+  SLS frequent        :     3170 kN·m
+  SLS quasi_permanent :     2750 kN·m
+  sísmica G + A_Ed + Σψ2·Q (A_Ed = 950): 3700 kN·m
+
+2) Puente de carretera: ψ del Anexo A2 Tabla A2.1 añadidos al catálogo y γ_Q,tráfico = 1,35 (Tabla A2.4(B)):
+  dominante            6.10    6.10a    6.10b
+  tándem TS            5486     5014     5057
+  sobrecarga UDL       5581     5014     5152
+  viento               5154     5014     4725
+  temperatura          5111     5014     4682
+  función (máx. sobre dominantes): 6.10 5581, 6.10a 5014, 6.10b 5152 kN·m → en 6.10 gobierna «sobrecarga UDL» como dominante
+  La sobrecarga repartida gana al tándem como dominante aunque valga la mitad: su ψ0 = 0,40 es el más bajo, así que es la que más sube al pasar de ψ0·Q a Q (0,60·700 = 420 frente a 0,25·1400 = 350 kN·m).
+  SLS característica 4134, frecuente 3260, casi permanente 2210 kN·m (solo la térmica tiene ψ2 ≠ 0)
+
+EN 1990 A2 trata el gr1a (TS + UDL) como un grupo con un solo ψ0 del grupo; aquí se separan para ver el efecto. El módulo no conoce el Anexo A2: γ_Q, γ_G de puentes (1,35 también) y ψ hay que ponerlos a mano, y GAMMA_Q es estado global del módulo (devuélvelo a 1,50 después, como arriba). 6.10a usa ψ0 también en la dominante; 6.10b reduce las permanentes con ξ = 0,85.

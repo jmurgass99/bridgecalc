@@ -1,0 +1,22 @@
+Viga W40x199 compuesta: Kg = n·(I + A·e_g²) = 8·(14,900 + 58.8·48.0²) = 1,203,002 in⁴; S = 8.0 ft, L = 100.0 ft, t_s = 8.0 in, d_e = 2.5 ft
+
+  factor                              1 carril 2+ carriles de diseño
+  momento, viga interior (Tabla 4.6.2.2.2b-1)     0.461       0.657     0.657
+  cortante, viga interior (Tabla 4.6.2.2.3a-1)     0.680       0.814     0.814
+  momento, viga exterior                 0.525       0.687     0.687
+  cortante, viga exterior                0.525       0.851     0.851
+  (exterior: regla de la palanca con m = 1,20 para un carril; e = 0,77 + d_e/9,1 = 1.045 para dos o más)
+
+Momento HL-93 por carril en L = 30.48 m: 3872 kN·m → por viga interior 2544 kN·m, exterior 2658 kN·m
+Cortante HL-93 por carril: 534.5 kN → viga interior 435.3 kN, exterior 454.8 kN
+
+Barrido de la separación S (L = 100 ft, t_s = 8 in, mismo Kg):
+  S [ft] S [m]  g_M int  g_V int  g_M ext M por viga int [kN·m]
+     6.0  1.83    0.537    0.671    0.700                  2081
+     7.0  2.13    0.598    0.743    0.625                  2316
+     8.0  2.44    0.657    0.814    0.687                  2544
+     9.0  2.74    0.715    0.884    0.747                  2767
+    10.0  3.05    0.771    0.952    0.805                  2985
+    12.0  3.66    0.880    1.082    0.920                  3408
+
+Más separación → más carga por viga, casi linealmente en cortante (0,2 + S/12 − (S/35)²) y con exponente 0,6 en momento. Rango de validez §4.6.2.2.2b: 3,5 ≤ S ≤ 16 ft, 4,5 ≤ t_s ≤ 12 in, 20 ≤ L ≤ 240 ft, 4 vigas o más; fuera de él la función no avisa.

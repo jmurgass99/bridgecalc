@@ -1,0 +1,19 @@
+HL-93 en 30 m: 3787 kN·m por carril × g = 0,62 → LL+IM = 2348 kN·m por viga; γ_LL = {'inventory': 1.75, 'operating': 1.35}
+
+  viga                       C = φcφsφRn  RF inv  RF oper  lectura
+  V1 buena, redundante              8550    1.13     1.46  admite la carga de diseño
+  V2 regular (φ_c 0,95)             8122    1.02     1.32  admite la carga de diseño
+  V3 mala + no redundante           6177    0.55     0.71  RF operación < 1: restringir el paso
+
+Sensibilidad al factor de condición (viga V1):
+    φ_c  RF inv  RF oper
+   1.00    1.13     1.46
+   0.95    1.02     1.32
+   0.90    0.92     1.19
+   0.85    0.81     1.05
+   0.80    0.71     0.92
+
+Con un efecto permanente favorable P = −300 kN·m (pretensado secundario): RF inventario 1.20 frente a 1.13
+Nivel desconocido → ValueError: nivel debe ser 'inventory' u 'operating'
+
+El RF es lineal en la capacidad y en el inverso de la carga viva: un 5 % menos de φ_c baja el RF un 5 % de la capacidad, no del RF. La función cubre Strength I con γ_DC 1,25 y γ_DW 1,50 (MBE permite 1,25 si el espesor del pavimento está medido); no evalúa cargas legales ni permisos, que usan otros γ_LL.

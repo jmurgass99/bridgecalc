@@ -1,0 +1,26 @@
+Momentos sin mayorar por viga [kN·m]: DC = 2600, DW = 450, LL = 1850, WS = 120, WL = 40, EQ = 900, BR = 60, CT = 300, WA = 0 (LL ya incluye IM)
+
+  estado límite   γ_DC  γ_DW  γ_LL  γ_WS  γ_EQ  M_u [kN·m]
+  Strength_I      1.25  1.50  1.75  0.00  0.00        7268
+  Strength_II     1.25  1.50  1.35  0.00  0.00        6504
+  Strength_III    1.25  1.50  0.00  1.40  0.00        4093
+  Strength_IV     1.50  1.50  0.00  0.00  0.00        4575
+  Strength_V      1.25  1.50  1.35  0.40  0.00        6510
+  Service_I       1.00  1.00  1.00  0.30  0.00        4976
+  Service_II      1.00  1.00  1.30  0.00  0.00        5455
+  Service_III     1.00  1.00  0.80  0.00  0.00        4530
+  Service_IV      1.00  1.00  0.00  0.70  0.00        3134
+  Fatigue_I       0.00  0.00  1.75  0.00  0.00        3238
+  Fatigue_II      0.00  0.00  0.80  0.00  0.00        1480
+  Extreme_I       1.25  1.50  0.50  0.00  1.00        5750
+  Extreme_II      1.25  1.50  0.50  0.00  0.00        5150
+
+Gobierna en resistencia: Strength_I con M_u = 7268 kN·m; contribuciones: DC 3250, DW 675, LL 3238, BR 105
+Permanentes favorables (γ_p mínimo 0,90/0,65), por ejemplo para comprobar levantamiento: 2632 kN·m frente a 3925 con γ_p máximo
+
+Tabla paralela aashto_lrfd.get_design_force('STRENGTH_I'): 7162 kN·m = 1,25·DC + 1,50·DW + 1,75·LL; los 105 kN·m de diferencia con load_combinations son el frenado BR (1,75·60), que esta tabla no contempla; combinaciones disponibles: ['STRENGTH_I', 'STRENGTH_II', 'STRENGTH_III', 'STRENGTH_V', 'SERVICE_I', 'SERVICE_II', 'SERVICE_III']
+  STRENGTH_I: Resistencia I (Carga viva de diseño normal sin viento); EH = 1.5, EV = 1.35 (empujes de tierras para estribos)
+
+Factores de resistencia φ (§5.5.4.2): flexure_tension_controlled_concrete 0.9, compression_controlled_spirals 0.75, compression_controlled_other 0.75, shear_normal_weight_concrete 0.9, shear_lightweight_concrete 0.7, torsion_concrete 0.9, bearing_on_concrete 0.7, tension_steel 0.95
+
+Strength IV (1,50·DC) solo gobierna con mucha carga permanente frente a la viva; Extreme I usa 0,50·LL con el sismo. Los γ_WS del módulo (1,40 Strength III, 0,40 Strength V, 0,30 Service I, 0,70 Service IV) son los del esquema anterior a la 8ª edición (2017); desde ésta el viento parte de una ráfaga de 3 s y Strength III pasó a γ_WS = 1,0, con velocidades propias para Strength V y Service I. Revisa la Tabla 3.4.1-1 de la edición que te aplique.

@@ -1,0 +1,25 @@
+Viga biapoyada L = 20 m, dos carriles nocionales de 3,0 m (EN 1991-2 Tabla 4.2):
+  carril 1: tándem 2 × 300 kN, carga repartida 9.0 kN/m² → 27.0 kN/m
+  carril 2: tándem 2 × 200 kN, carga repartida 2.5 kN/m² → 7.5 kN/m
+
+Momento máximo de un tándem de dos ejes Q a 1,2 m (carril 1, Q = 300 kN):
+  Barré: eje crítico en x = L/2 − d/4 = 9.70 m, R_izq = 291.0 kN → M = 2822.7 kN·m (función: 2822.7)
+  «grupo centrado» sumando dos secciones distintas (9,4 y 10,0 m): 2904.6 kN·m, +2.90 % sobre un máximo físicamente inalcanzable
+  fórmula de carga repartida 2QL/8·(1 − (0,6/L)²) usada por loads.eurocode hasta 1.0: 1498.7 kN·m, -46.9 % (la mitad, del lado inseguro)
+
+Envolvente LM1 dos carriles: carga repartida 34,5 kN/m → M 1725.0 kN·m, V 345.0 kN; tándems 2822.7 + 1881.8 kN·m, V 582 + 388 kN
+  M_máx = 6429.5 kN·m, V_máx = 1315.0 kN
+
+evaluate_eurocode_lm1 (calzada 7,0 m → 2 carriles): M_TS 4704.5, M_UDL 1725.0, total 6429.5 kN·m; V 1315.0 kN; carga total de tándems 1000 kN
+  Mismo cortante que traffic_envelope_lm1 (1315 kN): un eje sobre el apoyo y el otro a 1,2 m, V_TS = 970 kN. Hasta 1.0 evaluate_eurocode_lm1 ponía los dos ejes a la vez sobre el apoyo (2Q = 1000 kN, total 1345 kN).
+loads.eurocode.evaluate_lm1 (legado): M_total 6429.5 kN·m, idéntico; emite DeprecationWarning: «bridgecalc.loads.eurocode.evaluate_lm1 está obsoleto: usa br…»
+
+Anchos de calzada y número de carriles que toma evaluate_eurocode_lm1 (tope de 3, sin área remanente):
+  w =  5.0 m → 1 carriles, M_total  4172.7 kN·m, carga repartida 27.0 kN/m
+  w =  6.0 m → 2 carriles, M_total  6429.5 kN·m, carga repartida 34.5 kN/m
+  w =  7.0 m → 2 carriles, M_total  6429.5 kN·m, carga repartida 34.5 kN/m
+  w =  9.0 m → 3 carriles, M_total  7745.4 kN·m, carga repartida 42.0 kN/m
+  w = 10.5 m → 3 carriles, M_total  7745.4 kN·m, carga repartida 42.0 kN/m
+  w = 12.0 m → 3 carriles, M_total  7745.4 kN·m, carga repartida 42.0 kN/m
+
+El área remanente (2,5 kN/m² fuera de los carriles) no entra en evaluate_eurocode_lm1: para calzadas que no son múltiplo de 3 m usa evaluate_iap11_traffic_loads, que la reparte. Los valores son característicos y por tablero completo, sin α nacionales (α = 1) ni reparto transversal entre vigas.

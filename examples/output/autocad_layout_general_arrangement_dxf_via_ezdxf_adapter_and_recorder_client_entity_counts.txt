@@ -1,0 +1,11 @@
+Puente [30.0, 40.0, 30.0] m con pilas en x = [30.0, 70.0] m. draw_bridge_layout → {'lines': 6, 'texts': 6, 'piers': 2}
+  Capas y color: {'BR-AXIS': 7, 'BR-PIER': 1, 'BR-DIMS': 3, 'BR-TITLE': 7}
+  Primitivas por capa: {('BR-AXIS', 'polyline'): 1, ('BR-PIER', 'polyline'): 2, ('BR-PIER', 'text'): 2, ('BR-DIMS', 'polyline'): 3, ('BR-DIMS', 'text'): 3, ('BR-TITLE', 'text'): 1}
+  Textos: ['P1', 'P2', 'L1=30.00 m', 'L2=40.00 m', 'L3=30.00 m', 'Viaducto demo 30+40+30']
+  Puente de 2 luces sin pilas declaradas: se sintetiza 1 pila a 10 m de altura; textos ['P1', 'L1=20.00 m', 'L2=20.00 m', 'Sin pilas']
+
+DXF viaducto_demo_disposicion_general.dxf: versión AC1032, $INSUNITS = 6 (6 = metros), entidades {'LWPOLYLINE': 7, 'TEXT': 6}, capas ['BR-AXIS', 'BR-PIER', 'BR-DIMS', 'BR-TITLE']
+  Conteos del dibujo {'lines': 6, 'texts': 6, 'piers': 2}; segmentos AutoLISP acumulados: 10 líneas y 6 textos (para generar un .dwg nativo con accoreconsole cuando exista)
+  Extensión en x: -2.0 a 102.0 m (eje de 100 m más el marco)
+
+El plano es esquemático: eje en planta, pilas como segmentos verticales hacia −z, cotas como polilíneas y texto; sin bloques, estilos de texto ni acotación real. export_bridge_grillage_drawings añade planta, alzado, sección y cuadros a partir del resultado del bucle de diseño, pero requiere rebardxf y, para el .dwg, AutoCAD con accoreconsole.

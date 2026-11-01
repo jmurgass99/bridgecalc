@@ -1,0 +1,28 @@
+LM2: eje de 400 kN = 2 ruedas de 200 kN a 2.0 m, huella 0.35 × 0.6 m; comprobación local de losa entre vigas:
+  luz local [m]  β_Q M = Q·L/4 [kN·m] V = Q [kN]
+            2.0  1.0            200.0        400
+            3.0  1.0            300.0        400
+            4.0  1.0            400.0        400
+            4.0  0.8            320.0        320
+            6.0  1.0            600.0        400
+
+LM3 — vehículos especiales (un carril, sin carga repartida acompañante) frente a LM1 de un carril:
+  SV120         6 ejes,   1440 kN (  147 t), longitud  6.00 m, DAF 1.00 (EUROCODE)
+  SV196        12 ejes,   2400 kN (  245 t), longitud 16.50 m, DAF 1.00 (EUROCODE)
+  IRC Class A   8 ejes,    554 kN (   56 t), longitud 18.80 m, DAF 1.17 (INDIA)
+  HS20-44       3 ejes,    320 kN (   33 t), longitud  8.54 m, DAF 1.33 (USA)
+  Ojo: «SV196» suma 2400 kN ≈ 245 t y «SV120» 1440 kN ≈ 147 t; los nombres evocan los vehículos SV del anejo nacional británico, pero los ejes no los reproducen, y el Anexo A de EN 1991-2 define otra serie (600/150, 900/150…). Tómalos como convoyes de ejemplo.
+
+  L [m]        SV120        SV196  IRC Class A      HS20-44 LM1 1 carril
+     10         2304         1900          534          421         1663
+     15         4104         3866          970          821         2833
+     20         5904         6508         1492         1221         4173
+     30         9504        12504         2756         2022         7359
+     40        13104        18504         4141         2822        11221
+
+SV196 en 30 m: M = 12504 kN·m con el eje delantero en x = 6.05 m (2400 kN sobre 16.5 m)
+IRC Class A: DAF = 1 + 4,5/(6 + L) → 1.250 en 10 m, 1.098 en 40 m (tope 1,25)
+
+AS_SM1600 del catálogo: (48.0, 96.0, 96.0) kN a (3.0, 1.2) m = 240 kN: NO es el M1600/S1600 de AS 5100.2 ni el antiguo T44 de 440 kN; tratarlo como un vehículo genérico de 3 ejes, no como norma.
+
+Los momentos de LM3 son en el centro de la luz (línea de influencia triangular), no el máximo absoluto de Barré: para el SV120 en 20 m, centro 5904.0 frente a máximo bajo un eje 5910.5 kN·m (+0.11 %). Para LM3 EN 1991-2 A.4 toma DAF = 1,0 (vehículo a velocidad reducida) y permite combinarlo con LM1 frecuente en los demás carriles, cosa que aquí no se hace.

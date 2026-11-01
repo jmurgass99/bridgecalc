@@ -1,0 +1,30 @@
+Condiciones de evidencia (6): ('demand_present', 'capacity_present', 'analysis_executed', 'geometry_present', 'material_present', 'reinforcement_present')
+
+  caso                                                                       estado
+  DCR 0,85 con las seis evidencias                                 CALCULADO_CUMPLE
+  DCR 1,20 con las seis evidencias                                  CALCULADO_FALLA
+  DCR 0,85 sin declarar evidencias                                     NO_CALCULADO
+  DCR 0,85, analysis_executed=False (SAP2000 no corrió)                NO_CALCULADO
+  DCR 0,85, falta f'c en missing_inputs                                NO_CALCULADO
+  DCR 0,85, método no soportado (hormigón con fórmulas de acero)  REQUIERE_REVISION
+  sin número (None) con evidencias                                REQUIERE_REVISION
+  DCR +inf (A_s = 0 en concrete_box_girder_flexure)               REQUIERE_REVISION
+  DCR NaN                                                         REQUIERE_REVISION
+  DCR −0,2 (signo invertido)                                      REQUIERE_REVISION
+  DCR 1 + 6,66e-16 (tres ULP)                                      CALCULADO_CUMPLE
+  DCR 1,001 (0,1 % de exceso)                                       CALCULADO_FALLA
+  demanda cero con evidencias                                      CALCULADO_CUMPLE
+
+Agregación de los estados de un tablero:
+  [] (ninguna comprobación)                            → NO_CALCULADO
+  [flexión CUMPLE, cortante CUMPLE, flecha CUMPLE]     → CALCULADO_CUMPLE
+  [CUMPLE, NO_APLICA (LTB en hormigón)]                → CALCULADO_CUMPLE
+  [NO_APLICA, NO_APLICA]                               → NO_APLICA
+  [CUMPLE, REQUIERE_REVISION]                          → REQUIERE_REVISION
+  [CUMPLE, NO_CALCULADO (sin SAP2000)]                 → NO_CALCULADO
+  [CUMPLE, NO_CALCULADO, FALLA]                        → CALCULADO_FALLA
+  [REQUIERE_REVISION, NO_CALCULADO]                    → NO_CALCULADO
+  ['CALCULADO_CUMPLE', 'texto raro']                   → REQUIERE_REVISION
+
+  all([]) en Python es True: por eso la lista vacía se trata aparte y da NO_CALCULADO; un tablero con cero comprobaciones no está aprobado, está sin comprobar.
+Este contrato es el que usa verify_bridge_grillage_results para clasificar cada barra y el global, y el que convierte un DCR infinito (capacidad nula) en REQUIERE_REVISION en vez de en FALLA: la ausencia se propaga como ausencia.

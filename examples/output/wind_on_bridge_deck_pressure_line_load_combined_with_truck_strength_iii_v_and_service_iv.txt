@@ -1,0 +1,26 @@
+Tablero de 40 m, altura expuesta 2.5 m, C_d = 1.5, V = 44.7 m/s (100 mph, velocidad base de las ediciones del LRFD anteriores a la 8ª):
+  código   q [kPa]  w [kN/m] F total [kN]
+  AASHTO     1.836     4.589        183.6
+  EU         1.836     4.589        183.6
+  AS         1.928     4.819        192.8
+  NSR        1.836     4.589        183.6
+  Comprobación: ½·1,225·44.7²·1.5 = 1.836 kPa; AS aplica un factor 1,05 propio del módulo.
+
+Velocidad y coeficiente de arrastre (AASHTO):
+  V [m/s]  km/h   Cd  w [kN/m]
+     30.0   108  1.3     1.792
+     40.0   144  1.5     3.675
+     44.7   161  1.5     4.589
+     50.0   180  1.7     6.508
+
+Camión HL-93 de 325 kN con IM 33 % → 432.2 kN; viento 4.589 kN/m × 40 m = 183.6 kN; suma sin mayorar 615.8 kN (vertical + horizontal, solo orientativa)
+Con código EU el camión no se mayora (LM1 ya incluye la amplificación): 325.0 kN
+
+Mayoración de un efecto transversal (kN·m) con WS = 220 y WL = 40:
+  Strength_I    γ_LL 1.75 γ_WS 0.00 γ_WL 0.00 → 7162
+  Strength_III  γ_LL 0.00 γ_WS 1.40 γ_WL 0.00 → 4233
+  Strength_V    γ_LL 1.35 γ_WS 0.40 γ_WL 1.00 → 6551
+  Service_I     γ_LL 1.00 γ_WS 0.30 γ_WL 1.00 → 5006
+  Service_IV    γ_LL 0.00 γ_WS 0.70 γ_WL 0.00 → 3204
+
+Strength III (viento sin tráfico) y V (viento con tráfico) rara vez gobiernan la flexión longitudinal, pero sí los apoyos y la subestructura. Los γ_WS son los del esquema anterior a la 8ª edición del LRFD (Strength III 1,40); desde 2017 Strength III usa 1,0 con la presión de la nueva sección 3.8. El módulo no aplica factores de ráfaga, altura ni exposición (AASHTO 3.8 o c_e y c_f de EN 1991-1-4): úsalo para órdenes de magnitud.

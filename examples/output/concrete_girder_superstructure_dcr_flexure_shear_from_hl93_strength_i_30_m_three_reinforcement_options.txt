@@ -1,0 +1,18 @@
+Viga interior L = 30 m: DC 25 kN/m → M 2812 kN·m, DW 5 kN/m → M 562; HL-93 3787 kN·m/carril × g_M 0.65 = 2462 kN·m; V 532 × g_V 0.8 = 425 kN
+  Strength I: M_u = 1,25·2812 + 1,50·562 + 1,75·2462 = 8667 kN·m; V_u = 1326 kN
+
+Sección f'c = 35.0 MPa, b_w = 600 mm, d = 1750 mm, f_y = 500 MPa, φ = 0,90:
+  armado                       A_s [mm²]  a [mm] φM_n [kN·m] DCR flexión
+  16 Ø32                           12864   360.3        9087       0.954 cumple
+  20 Ø32                           16080   450.4       11033       0.786 cumple
+  24 Ø32                           19296   540.5       12849       0.675 cumple
+
+  estribos                     A_v [mm²] s [mm] φV_n [kN] DCR cortante
+  2 ramas Ø12 a 300                  226    300      1570        0.844 cumple
+  2 ramas Ø12 a 200                  226    200      1938        0.684 cumple
+  4 ramas Ø12 a 200                  452    200      3040        0.436 cumple
+  sin estribos (solo V_c)              0      0       835        1.587 NO cumple
+
+  Casos límite: A_s = 0 → DCR inf; a ≥ d (A_s = 90 000 mm²) → inf: el módulo devuelve infinito en vez de lanzar, así que hay que comprobar el valor.
+
+Son chequeos de anteproyecto: brazo d − a/2 con un solo lecho de armadura, sin acero comprimido, β y θ fijos (sin ε_x), d_v = 0,9·d en vez de máx(0,9d, 0,72h), sin armadura mínima ni separación máxima de estribos. Usa box_girder_* para pretensado y una comprobación seccional completa para el proyecto.

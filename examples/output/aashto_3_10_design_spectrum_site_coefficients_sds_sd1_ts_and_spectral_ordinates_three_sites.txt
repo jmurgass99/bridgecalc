@@ -1,0 +1,27 @@
+Valores de roca: PGA = 0.4 g, S_s = 1.0 g, S_1 = 0.4 g. Coeficientes de sitio (F_pga, F_a, F_v) de las Tablas 3.10.3.2-1/2/3 para esos niveles:
+
+  clase             F_pga  F_a  F_v    A_s   S_DS   S_D1 T_0 [s] T_s [s]
+  B (roca)            1.0  1.0  1.0  0.400  1.000  0.400   0.080   0.400
+  D (suelo rígido)    1.1  1.1  1.6  0.440  1.100  0.640   0.116   0.582
+  E (suelo blando)    0.9  0.9  2.4  0.360  0.900  0.960   0.213   1.067
+
+  T [s]          B (roca)  D (suelo rígido)  E (suelo blando)
+   0.00             0.400             0.440             0.360
+   0.10             1.000             1.007             0.613
+   0.20             1.000             1.100             0.866
+   0.40             1.000             1.100             0.900
+   0.60             0.667             1.067             0.900
+   0.80             0.500             0.800             0.900
+   1.00             0.400             0.640             0.900
+   1.50             0.267             0.427             0.640
+   2.00             0.200             0.320             0.480
+   3.00             0.133             0.213             0.320
+   4.00             0.100             0.160             0.240
+
+Lectura para pilas (Sa en g):
+  T = 0.4 s: B 1.000, D 1.100, E 0.900
+  T = 0.8 s: B 0.500, D 0.800, E 0.900
+  T = 1.5 s: B 0.267, D 0.427, E 0.640
+
+En suelo blando la meseta baja (F_a 0,9) pero F_v = 2,4 estira T_s hasta 1.07 s: una pila de 1,5 s ve 0.640 g frente a 0.267 g en roca, ×2.4.
+La función no interpola los coeficientes de sitio entre niveles de aceleración ni fija la categoría SDC (A–D, Tabla 3.10.6-1); dale los F de la tabla y clasifica fuera. Sa(0) = A_s, sin rama de periodo largo T_L.

@@ -1,0 +1,19 @@
+Coste pila 250 kUSD, tablero 8 kUSD/m a 30 m con exponente 1,5, luces admitidas 15–80 m:
+  L total [m] n óptimo luz [m] coste [MUSD] M HL-93 [kN·m]  candidatos (n: luz → MUSD)
+          120        2    60.0         1.61          10173  2: 60 → 1.61; 3: 40 → 1.61; 4: 30 → 1.71; 5: 24 → 1.86; 6: 20 → 2.03; 7: 17 → 2.23…
+          200        4    50.0         2.82           7814  3: 67 → 2.89; 4: 50 → 2.82; 5: 40 → 2.85; 6: 33 → 2.94; 7: 29 → 3.06; 8: 25 → 3.21…
+          300        6    50.0         4.35           7814  4: 75 → 4.54; 5: 60 → 4.39; 6: 50 → 4.35; 7: 43 → 4.37; 8: 38 → 4.43; 9: 33 → 4.53…
+          400        8    50.0         5.88           7814  5: 80 → 6.23; 6: 67 → 6.02; 7: 57 → 5.92; 8: 50 → 5.88; 9: 44 → 5.89; 10: 40 → 5.95…
+
+Sensibilidad al coste de pila (L total = 200 m):
+  pila [kUSD]   n luz [m] coste [MUSD]
+           50  12    16.7         1.74
+          150   6    33.3         2.44
+          250   4    50.0         2.82
+          600   3    66.7         3.59
+         2000   3    66.7         6.39
+
+Exponente del tablero (L total = 200 m, pila 250 kUSD): exp 1.2: n = 3; exp 1.5: n = 4; exp 2.0: n = 7; exp 2.5: n = 8
+Luces restringidas a 40–60 m: n = 4, luz 50.0 m, candidatos [(4, 50.0), (5, 40.0)]
+
+El modelo de coste es ilustrativo: no incluye cimentaciones (que dependen de la altura de pila y el terreno), ni el salto de tipología al pasar de 40–50 m (losa → cajón → pretensado), ni el coste de los estribos; M_design es el de viga simple, no el del tablero continuo. Sirve para ordenar escenarios, no para presupuestar.

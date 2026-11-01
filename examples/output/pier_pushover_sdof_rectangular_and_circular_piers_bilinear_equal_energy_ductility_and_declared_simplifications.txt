@@ -1,0 +1,15 @@
+f'c 30 MPa, f_y 420 MPa, N = 6000 kN, ρ_l 1,5 % salvo indicación:
+  pila                               M_y [kN·m]     M_u φ_y [1/km] L_p [m] V_y [kN] Δ_y [mm] Δ_u [mm]   μ_Δ K_e [kN/mm]
+  rect. 1,5 × 1,5 m, H 8 m                18760   20637      3.150   0.871     2121     60.8    254.0  4.18        34.9
+  rect. 1,5 × 1,5 m, H 12 m               18760   20637      3.150   1.191     1399    135.3    536.3  3.96        10.3
+  rect. 1,5 × 2,0 m, H 8 m                33519   36871      2.362   0.871     3790     45.6    190.5  4.18        83.1
+  circular Ø 1,8 m, H 8 m                 25608   28169      2.742   0.871     2895     52.9    221.1  4.18        54.7
+  rect. 1,5 × 1,5 m, H 8 m, ρ 3 %         36621   40283      3.150   0.871     4140     60.8    254.0  4.18        68.1
+
+Pila de referencia: 50 puntos; curva trilineal origen → (Δ_y, V_y) → (Δ_u, V_u): tramo elástico hasta 64.5 mm, luego endurecimiento del 10 % hasta 254.0 mm
+  Δ_y = φ_y·H²/3 = 0.00315·8²/3 = 67.2 mm; Δ_p = (φ_u − φ_y)·L_p·(H − L_p/2) = 186.8 mm
+  L_p Priestley 2007 (0,08·H + 0,022·f_y·d_b, d_b = 25 mm fijo) = 0.871 m frente a EN 1998-2 Anexo E (0,10·L_v + 0,015·f_y·d_b) = 0.958 m
+
+Idealización bilineal de una curva exponencial V = 900·(1 − e^(−Δ/18)): V_y 765 kN, Δ_y 26.5 mm, K_e 28.9 kN/mm (secante al 70 %), μ 4.53; energía curva 91804 frente a bilineal 87919 kN·mm (-4.2 %)
+
+Lo que NO hace: ni diagrama momento-curvatura por equilibrio de sección (el 0,9·A_s·f_y·d ignora el acero comprimido y la posición real del bloque de compresiones), ni φ_u del hormigón confinado (es 10·φ_y por decreto), ni P-Δ, ni cortante. El diámetro de barra para L_p está fijo en 25 mm. Úsalo para ordenar alternativas; para capacidades, sección por fibras.

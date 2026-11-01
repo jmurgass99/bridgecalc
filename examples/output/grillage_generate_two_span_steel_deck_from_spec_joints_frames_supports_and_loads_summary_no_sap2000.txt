@@ -1,0 +1,25 @@
+Material S355 (EN 1993-1-1 Tabla 3.1 / EN 10025-2 (S355)): E = 210 GPa, f_y = 355 MPa, γ = 78.5 kN/m³
+Vigas PG_1500x500x40x16 (492 kg/m, I33 = 0.0251 m⁴), diafragmas PG_800x300x25x12 (188 kg/m)
+
+Emparrillado: 52 nudos, 87 barras (Counter({'girder': 48, 'diaphragm': 39})); recuentos derivados {'n_x': 13, 'divisions_per_span': 6, 'n_joints': 52, 'n_frames_long': 48, 'n_frames_trans': 39, 'n_frames': 87, 'n_supports': 12}
+  Apoyos: 12 nudos en x = [0.0, 30.0, 60.0]; coacciones [Ux,Uy,Uz,Rx,Ry,Rz]: N0_0 [True, True, True]; N0_1 [True, False, True]; N6_0 [False, True, True]; N6_1 [False, False, True]
+  Estabilidad: {'sum_Fx': True, 'sum_Fy': True, 'sum_Fz': True, 'sum_Mx': True, 'sum_My': True, 'sum_Mz': True}, dilatación longitudinal libre en móviles = True
+
+Cargas (EN_1991_2_LM1, IM = 1.0): losa 0,25 m → 15.625 kN/m por viga; DW (2 kPa + 5 kN/m de barreras) → 6.25 kN/m por viga
+  LANE_1         y = 0.0–3.0 m, UDL 27.0 kN/m, tándem 300 kN/eje, Courbon [0.565, 0.355, 0.145, -0.065]
+  LANE_2         y = 3.0–6.0 m, UDL 7.5 kN/m, tándem 200 kN/eje, Courbon [0.295, 0.265, 0.235, 0.205]
+  LANE_3         y = 6.0–9.0 m, UDL 7.5 kN/m, tándem 100 kN/eje, Courbon [0.025, 0.175, 0.325, 0.475]
+  REMAINING_AREA y = 9.0–10.0 m, UDL 2.5 kN/m, tándem 0 kN/eje, Courbon [-0.155, 0.115, 0.385, 0.655]
+  Carril repartido por viga (Courbon, carriles desde el borde y = 0): {0: 17.2675, 1: 13.1725, 2: 9.0775, 3: 4.9825} kN/m (total 44.5 kN/m)
+  Vehículo para M⁺: ejes [600.0, 600.0] kN en x = [14.7, 15.9] m (Barré en el vano 1); para V: en x = [0.05, 1.25] m (desfase 0.05 m para no caer en el nudo)
+  Reparto del eje entre vigas: {0: 0.385, 1: 0.295, 2: 0.205, 3: 0.115}; viga exterior gobernante 0
+  Envolvente analítica de viga simple (comprobación): M = 13369 kN·m, V = 1806 kN
+  Cargas puntuales LIVE_VEHICLE_M: 8 sobre barras, p. ej. {'frame_id': 'L2_0', 'girder_index': 0, 'axle_index': 1, 'x_global_m': 14.7, 'dist_local_m': 4.7, 'load_kN': 230.999997, 'fz_global_kN': -230.999997}
+  Combinaciones (3): 0: {'name': 'ULS_STR', 'norm_ref': 'EN 1990 §6.4.3.2 Ec. 6.10 + Anexo A2 Tabla A2.4(B)', 'factors': {'DEAD': 1.35, 'DW': 1.35, 'LIVE_LANE': 1.35, 'LIVE_VEHICLE_M': 1.35}}; 1: {'name': 'ULS_STR_SHEAR', 'norm_ref': 'EN 1990 §6.4.3.2 Ec. 6.10 + Anexo A2 Tabla A2.4(B)', 'factors': {'DEAD': 1.35, 'DW': 1.35, 'LIVE_LANE': 1.35, 'LIVE_VEHICLE_V': 1.35}}; 2: {'name': 'SLS_CHARACTERISTIC', 'norm_ref': 'EN 1990 §6.5.3 Ec. 6.14b (Combinación característica)', 'factors': {'DEAD': 1.0, 'DW': 1.0, 'LIVE_LANE': 1.0, 'LIVE_VEHICLE_M': 1.0}}
+
+Modelo guardado: grillage_2x30_steel.json (30 kB)
+
+Limitaciones declaradas en meta (3): El tren de cargas de tráfico (HL-93 / LM1) se introduce mediante casos estáticos en posici… | La losa superior de hormigón se introduce como masa/carga permanente tributaria sobre las … | Los aparatos de apoyo se modelan como vínculos puntuales ideales isostáticos en planta (fi…
+Estados límite aplicables (10) y comprobaciones no implementadas (5): torsión/alabeo, abolladura, conectores, fatiga, aparatos de apoyo quedan fuera.
+
+Sin spec, generate_grillage pide perfiles del catálogo EN 10365 de fastsap (HEM 1000 / HEB 400) y falla sin él; con spec y secciones calculadas aquí corre en puro Python. El tándem se aplica en posiciones discretas (M⁺ en el vano 1, V en x = 0+), no como carga móvil.

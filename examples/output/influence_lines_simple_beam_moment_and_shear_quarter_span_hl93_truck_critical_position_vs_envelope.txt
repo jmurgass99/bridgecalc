@@ -1,0 +1,19 @@
+Viga biapoyada L = 25 m. LI de momento: ordenada máxima en el centro 6.250 m (= L/4), en el cuarto 4.6875 m (= 3L/16)
+  Camión HL-93 (35.0, 145.0, 145.0) kN a (4.27, 4.27) m; carril 9.34 kN/m
+
+  sección / tren                               x 1er eje [m] efecto [kN·m]
+  M en L/2, camión, 35 kN delante                       8.23        1648.8
+  M en L/2, camión, 35 kN detrás                        8.23        1648.8
+  M en L/2, camión + carril en zona positiva            8.23        2378.4
+  M en L/4, camión, 35 kN delante                       1.99        1256.0
+  M en L/4, camión, 35 kN detrás                        6.28        1290.9
+  M en L/4, camión + carril en zona positiva            1.99        1803.3
+
+Momento del camión en la sección central por LI: 1648.8 kN·m; envolvente hl93_envelope (sección móvil, Barré): 1652.4 kN·m (+0.22 %): el máximo absoluto está bajo el eje central a 0,72 m del centro, no en el centro.
+Tren en una posición dada (eje delantero en 8,0 m): M_centro = 1640.8 kN·m (envelope_from_il, sin barrido)
+
+LI de cortante en x = L/4: salta de -0.248 a +0.748 al pasar la sección (−x/L a (L−x)/L)
+  Camión con los ejes pesados justo a la derecha de la sección: x 1er eje = 6.28 m → V = 206.5 kN; con carril en la zona positiva: 272.4 kN
+  Cortante en el apoyo (envolvente): 500.2 kN con IM y carril; sin IM el camión solo da 288.3 kN
+
+critical_position suma el carril sobre toda la zona de ordenada positiva (correcto para máximos positivos); para efectos negativos invierte el signo de la LI antes de llamar. La malla manda: con 200 puntos el error de posición es L/200; aquí se usan 501.

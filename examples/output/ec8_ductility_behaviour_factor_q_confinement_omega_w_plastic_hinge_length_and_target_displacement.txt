@@ -1,0 +1,29 @@
+Factor de comportamiento q (EN 1998-2 Tabla 4.1, forma simplificada del módulo):
+  reinforced_concrete_ductile            q = 3.50
+  reinforced_concrete_limited_ductility  q = 1.50
+  steel_ductile                          q = 3.50
+  non_ductile                            q = 1.00
+  Reducción por esbeltez de cortante α_s = L_s/h en pila dúctil de hormigón: α_s 4.0 → q 3.50, α_s 3.0 → q 3.50, α_s 2.0 → q 2.86, α_s 1.5 → q 2.47, α_s 1.0 → q 2.02, α_s 0.8 → q 1.00
+
+Confinamiento ω_w,req para una pila de 1,5 × 1,5 m, f_cd = 20 MPa (C30/37, γ_c 1,5), f_yd = 435 MPa:
+  N_Ed [kN]    η_k ω_w,req (α_n·α_s = 1) ω_w,req (α = 0,8)
+       3000  0.067                 0.120             0.120
+       6000  0.133                 0.120             0.120
+       9000  0.200                 0.120             0.120
+      13500  0.300                 0.131             0.163
+      18000  0.400                 0.174             0.217
+  Con η_k ≤ 0.276 manda el mínimo ω_w,min = 0,12 (zonas dúctiles, rectangular); por encima crece lineal con el axil.
+
+Longitud de rótula plástica L_p = 0,10·L_v + 0,015·f_y·d_b (Anexo E):
+  L_v =  6.0 m, Ø20: L_p = 0.60 + 0.150 = 0.750 m (12.5 % de L_v)
+  L_v =  8.0 m, Ø25: L_p = 0.80 + 0.188 = 0.988 m (12.3 % de L_v)
+  L_v =  8.0 m, Ø32: L_p = 0.80 + 0.240 = 1.040 m (13.0 % de L_v)
+  L_v = 12.0 m, Ø25: L_p = 1.20 + 0.188 = 1.388 m (11.6 % de L_v)
+
+Desplazamiento objetivo (demanda espectral frente a capacidad):
+  T_ef = 1.2 s, S_d = 180 mm, capacidad 250 mm → ratio 0.72 OK
+  T_ef = 1.8 s, S_d = 270 mm, capacidad 250 mm → ratio 1.08 NO CUMPLE
+  T_ef = 0.9 s, S_d = 120 mm, capacidad 150 mm → ratio 0.80 OK
+  Tipo desconocido → ValueError: Unknown pier_type 'timber'
+
+q de la tabla real depende también de la relación axil (η_k > 0,3 lo reduce con λ(η_k)) y del tipo de rótula (vertical/inclinada, en cabeza o pie); el módulo solo aplica la corrección por α_s. ω_w,req omite el término 0,13·(f_yd/f_cd)·(ρ_L − 0,01) de la fórmula completa de §6.2.1.4: es la forma básica por axil. Unidades SI estrictas (N, m², Pa).

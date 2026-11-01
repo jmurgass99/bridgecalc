@@ -1,0 +1,26 @@
+Incremento dinámico IM (fracción) por código y componente:
+  AASHTO other       → IM = 0.33
+  AASHTO deck_joints → IM = 0.75
+  AASHTO fatigue     → IM = 0.15
+  NSR    other       → IM = 0.33
+  AS     other       → IM = 0.30
+  EU     other       → IM = 0.00
+  SG     other       → IM = 0.00
+  EU_RAIL φ2 − 1 (EN 1991-2 §6.4.5.2, vía con mantenimiento cuidadoso): LΦ 3 m → 0.670, LΦ 5 m → 0.527, LΦ 10 m → 0.306, LΦ 20 m → 0.157, LΦ 50 m → 0.030
+  lm3_special.impact_factor (DAF): EUROCODE 1.00, AASHTO 1.33, INDIA 1.17, AS 1.30
+
+Hasta 1.0 'EU' devolvía el φ2 ferroviario (0,16 en 20 m, 0,31 en 10 m) y lo multiplicaba sobre el LM1, que ya incluye la amplificación dinámica: doble conteo del 16–30 %.
+
+multi_code.evaluate_as5100 — vehículo del módulo: ejes [60.0, 60.0, 80.0, 80.0, 80.0, 80.0] kN a [3.75, 1.2, 6.25, 1.2, 1.2] m (440 kN) + 6.0 kN/m, M_camión = IM·0,130·W·L:
+  L [m] M AS5100 1 carril       V  HL-93 M
+     20              1787     632     2127
+     30              2906     662     3787
+     40              4174     692     5681
+
+multi_code.evaluate_cc40 — ejes [40.0, 160.0, 160.0] kN a [4.0, 1.2] m + 9.0 kN/m, M_camión = IM·W·L/5,5:
+  L [m]  M_camión  M_carril  M_total       V
+     20      1741       450     2191     569
+     30      2612      1012     3624     614
+     40      3482      1800     5282     659
+
+Por qué no diseñar con estos dos módulos: ni el vehículo de 6 ejes y 440 kN con M = 0,130·W·L ni el camión de 360 kN con M = W·L/5,5 se han contrastado con AS 5100.2 (cargas M1600/S1600) ni con la CCP-14 colombiana (basada en AASHTO LRFD); ambos coeficientes son aproximaciones de envolvente sin barrido de posiciones. Se conservan por compatibilidad y están marcados como no normativos en el README. Para un tren de cargas concreto, barre sus ejes con influence_lines.critical_position o lm3_special.max_moment_simple_span.
