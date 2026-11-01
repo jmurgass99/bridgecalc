@@ -36,7 +36,11 @@ from .hl93 import (
     TRUCK_AXLES_kN,
     TRUCK_AXLE_SPACINGS_m,
 )
-from .influence_lines import InfluenceLine, influence_line_continuous
+from .influence_lines import (
+    InfluenceLine,
+    influence_line_continuous,
+    influence_line_reaction_continuous,
+)
 
 # AASHTO LRFD §3.6.1.3.1: momento negativo entre puntos de inflexión y reacciones en pilas
 TWO_TRUCK_MIN_GAP_m = 15.0      # 50 ft entre eje trasero de un camión y delantero del otro
@@ -77,6 +81,9 @@ class MultiSpanResult:
     M_positive_x_m: float = 0.0
     M_negative_x_m: float = 0.0
     V_x_m: float = 0.0
+    R_max_kN: float = 0.0               # reacción máxima vertical en apoyos (incl. 90% de 2 camiones en pilas interiores)
+    R_min_uplift_kN: float = 0.0        # reacción mínima (negativa = levantamiento / uplift en estribos o apoyos)
+    reactions: list[dict[str, Any]] = field(default_factory=list)
     components: dict[str, Any] = field(default_factory=dict)
     method: str = "líneas de influencia (tres momentos, EI constante) + barrido del tren de cargas"
 
@@ -89,6 +96,9 @@ class MultiSpanResult:
             "M_positive_x_m": self.M_positive_x_m,
             "M_negative_x_m": self.M_negative_x_m,
             "V_x_m": self.V_x_m,
+            "R_max_kN": self.R_max_kN,
+            "R_min_uplift_kN": self.R_min_uplift_kN,
+            "reactions": self.reactions,
             "components": self.components,
             "method": self.method,
         }
@@ -227,6 +237,53 @@ def envelope_multispan(inp: MultiSpanInput) -> MultiSpanResult:
                 best_v = dict(rec)
     best_v["all_sections"] = v_sections
 
+    # ---- reacciones en apoyos (incl. 90% de 2 camiones en pilas interiores, AASHTO §3.6.1.3.1) ----
+    reactions: list[dict[str, Any]] = []
+    R_max_kN = -1.0
+    R_min_uplift_kN = 0.0
+    for sup_idx, xs in enumerate(starts):
+        il_r = influence_line_reaction_continuous(spans, sup_idx, n_points=npts)
+        cand_pos = _vehicle_candidates(il_r, +1.0)
+        lane_pos = _lane(il_r, +1.0)
+        veh_pos = "truck" if cand_pos["truck"][0] >= cand_pos["tandem"][0] else "tandem"
+        single_r = IM * cand_pos[veh_pos][0] + lane_pos
+        is_interior = 0 < sup_idx < len(spans)
+        double_r = 0.0
+        two_r_best = 0.0
+        two_r_gap = 0.0
+        if is_interior:
+            for g in gaps:
+                e, _ = _sweep(il_r, _two_trucks(float(g)), +1.0)
+                if e > two_r_best:
+                    two_r_best, two_r_gap = e, float(g)
+            double_r = TWO_TRUCK_FACTOR * (IM * two_r_best + lane_pos)
+        r_max_sup = max(single_r, double_r)
+        rule_r = "0.9·(2 camiones + carril)" if (is_interior and double_r > single_r) else f"{veh_pos} + carril"
+
+        # Levantamiento (uplift): reacción negativa máxima
+        cand_neg = _vehicle_candidates(il_r, -1.0)
+        lane_neg = _lane(il_r, -1.0)
+        veh_neg = "truck" if cand_neg["truck"][0] >= cand_neg["tandem"][0] else "tandem"
+        r_uplift_mag = IM * cand_neg[veh_neg][0] + lane_neg
+        r_min_sup = -r_uplift_mag if r_uplift_mag > 1e-9 else 0.0
+
+        rec_r = {
+            "support_index": sup_idx,
+            "x_m": float(xs),
+            "is_interior": is_interior,
+            "R_max_kN": r_max_sup,
+            "R_min_kN": r_min_sup,
+            "rule": rule_r,
+            "single_vehicle_kN": single_r,
+            "two_trucks_total_kN": double_r if is_interior else None,
+            "two_trucks_gap_m": two_r_gap if is_interior else None,
+        }
+        reactions.append(rec_r)
+        if r_max_sup > R_max_kN:
+            R_max_kN = r_max_sup
+        if r_min_sup < R_min_uplift_kN:
+            R_min_uplift_kN = r_min_sup
+
     governing = (
         f"M+: {best_pos['vehicle']} + carril en x = {best_pos['x_m']:.2f} m; "
         f"M-: {best_neg['rule']} en apoyo x = {best_neg['x_m']:.2f} m; "
@@ -240,8 +297,11 @@ def envelope_multispan(inp: MultiSpanInput) -> MultiSpanResult:
         M_positive_x_m=best_pos["x_m"],
         M_negative_x_m=best_neg["x_m"],
         V_x_m=best_v["x_m"],
+        R_max_kN=R_max_kN,
+        R_min_uplift_kN=R_min_uplift_kN,
+        reactions=reactions,
         components={"spans_m": spans, "impact_factor": IM, "lane_kN_per_m": LANE_LOAD_kN_per_m,
-                    "M_positive": best_pos, "M_negative": best_neg, "V": best_v},
+                    "M_positive": best_pos, "M_negative": best_neg, "V": best_v, "reactions": reactions},
     )
 
 

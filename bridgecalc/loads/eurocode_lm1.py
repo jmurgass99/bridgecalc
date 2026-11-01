@@ -32,6 +32,7 @@ from .iap11 import tandem_bending_moment_barre, tandem_shear_force_support
 # ---------------------------------------------------------------
 LM1_TS_AXLE_kN_PER_LANE = [300.0, 200.0, 100.0]  # carril 1, 2, 3+
 LM1_UDL_kN_per_m2_PER_LANE = [9.0, 2.5, 2.5]
+LM1_REMAINING_AREA_UDL_kN_per_m2 = 2.5
 LM1_TS_AXLE_SPACING_m = 1.2
 LM1_TS_TRANSVERSE_SPACING_m = 2.0
 LM1_NOTIONAL_LANE_WIDTH_m = 3.0
@@ -45,6 +46,33 @@ LM2_WHEEL_CONTACT_m = (0.35, 0.60)   # ancho x largo
 LM2_WHEEL_SPACING_m = 2.0       # transversal
 
 
+def notional_lanes_en1991_2(carriageway_width_m: float) -> tuple[int, float, float]:
+    """División de la calzada en carriles teóricos según EN 1991-2 Tabla 4.1.
+
+    Parameters
+    ----------
+    carriageway_width_m : ancho de calzada ``w`` [m]
+
+    Returns
+    -------
+    (n_lanes, lane_width_m, remaining_area_width_m)
+        - ``w < 5.4 m``       : ``n_1 = 1``, ``w_l = 3.0 m`` (o ``w`` si ``w < 3.0 m``), resto ``max(0, w - 3.0)``
+        - ``5.4 m <= w < 6.0 m`` : ``n_1 = 2``, ``w_l = w / 2``, resto ``0.0``
+        - ``w >= 6.0 m``      : ``n_1 = int(w // 3.0)``, ``w_l = 3.0 m``, resto ``w - 3.0 * n_1``
+    """
+    w = float(carriageway_width_m)
+    if w <= 0.0:
+        raise ValueError("carriageway_width_m debe ser > 0")
+    if w < 5.4:
+        w_l = min(w, LM1_NOTIONAL_LANE_WIDTH_m)
+        return 1, w_l, max(0.0, w - w_l)
+    if w < 6.0:
+        return 2, w / 2.0, 0.0
+    n_1 = int(w // LM1_NOTIONAL_LANE_WIDTH_m)
+    rem = w - n_1 * LM1_NOTIONAL_LANE_WIDTH_m
+    return n_1, LM1_NOTIONAL_LANE_WIDTH_m, max(0.0, rem)
+
+
 @dataclass(frozen=True)
 class EurocodeLM1Input:
     """Datos de entrada para el modelo de carga LM1."""
@@ -53,8 +81,10 @@ class EurocodeLM1Input:
     alpha_Q1: float = 1.0     # factor ajuste TS carril 1
     alpha_q1: float = 1.0     # factor ajuste UDL carril 1
     alpha_Qr: float = 1.0     # factor ajuste TS carriles restantes
-    alpha_qr: float = 1.0     # factor ajuste UDL carriles restantes
+    alpha_qr: float = 1.0     # factor ajuste UDL carriles restantes y área restante
     n_lanes: int | None = None
+    include_remaining_area: bool = False  # si True, suma q_rk = 2.5 kN/m² sobre el área restante a M_UDL y V_UDL
+    use_table_4_1_lanes: bool = False     # si True, aplica EN 1991-2 Tabla 4.1 (incl. tramo 5.4 <= w < 6.0 m y n_1 > 3)
 
 
 @dataclass(frozen=True)
@@ -69,6 +99,13 @@ class EurocodeLM1Result:
     V_total_kN: float
     total_TS_load_kN: float    # carga total del tandem
     total_UDL_load_kN_per_m: float  # carga total lineal
+    lane_width_m: float = 3.0
+    remaining_area_width_m: float = 0.0
+    remaining_UDL_load_kN_per_m: float = 0.0
+    M_remaining_kNm: float = 0.0
+    V_remaining_kN: float = 0.0
+    M_total_with_remaining_kNm: float = 0.0
+    V_total_with_remaining_kN: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +118,13 @@ class EurocodeLM1Result:
             "V_total_kN": self.V_total_kN,
             "total_TS_load_kN": self.total_TS_load_kN,
             "total_UDL_load_kN_per_m": self.total_UDL_load_kN_per_m,
+            "lane_width_m": self.lane_width_m,
+            "remaining_area_width_m": self.remaining_area_width_m,
+            "remaining_UDL_load_kN_per_m": self.remaining_UDL_load_kN_per_m,
+            "M_remaining_kNm": self.M_remaining_kNm,
+            "V_remaining_kN": self.V_remaining_kN,
+            "M_total_with_remaining_kNm": self.M_total_with_remaining_kNm,
+            "V_total_with_remaining_kN": self.V_total_with_remaining_kN,
         }
 
 
@@ -118,8 +162,14 @@ def evaluate_eurocode_lm1(inp: EurocodeLM1Input) -> EurocodeLM1Result:
 
     if inp.n_lanes is not None:
         n_lanes = int(inp.n_lanes)
+        lane_width_m = LM1_NOTIONAL_LANE_WIDTH_m if W >= n_lanes * LM1_NOTIONAL_LANE_WIDTH_m else (W / n_lanes)
+        rem_width_m = max(0.0, W - n_lanes * lane_width_m)
+    elif inp.use_table_4_1_lanes:
+        n_lanes, lane_width_m, rem_width_m = notional_lanes_en1991_2(W)
     else:
         n_lanes = max(1, min(int(W // LM1_NOTIONAL_LANE_WIDTH_m), 3))
+        lane_width_m = LM1_NOTIONAL_LANE_WIDTH_m
+        rem_width_m = max(0.0, W - n_lanes * lane_width_m)
 
     total_TS_load = 0.0
     total_UDL_linear = 0.0
@@ -129,38 +179,35 @@ def evaluate_eurocode_lm1(inp: EurocodeLM1Input) -> EurocodeLM1Result:
     V_UDL = 0.0
 
     for i in range(n_lanes):
-        # TS per lane
-        Q_axle = LM1_TS_AXLE_kN_PER_LANE[min(i, 2)]
+        # TS per lane (EN 1991-2 Table 4.2: solo carriles 1, 2 y 3 tienen TS)
+        Q_axle = LM1_TS_AXLE_kN_PER_LANE[i] if i < 3 else 0.0
         alpha_Q = inp.alpha_Q1 if i == 0 else inp.alpha_Qr
         Q_eff = alpha_Q * Q_axle
 
-        # 2 ejes a 1.2 m separacion. Teorema de la equidistancia (carga y
-        # resultante equidistantes del centro de vano) para dos puntuales
-        # iguales separadas d: M_max = P*(L-d)/2 + P*d^2/(8L). Centrar el
-        # GRUPO en el vano (formula anterior) da un valor CERCANO pero no
-        # exacto, y por encima del maximo fisico alcanzable con esas dos
-        # cargas -- verificado: para L=30, d=1.2 daba 14.976*P, mas que el
-        # maximo real 14.406*P, un exceso del 3.96% (fisicamente imposible).
-        # Desde 1.1.0 momento y cortante salen de las mismas funciones que IAP-11 y ec1_traffic:
-        #  - L >= (1 + 1/sqrt(2))·d = 2,05 m: Barré, Q·((L − d)/2 + d²/(8L));
-        #  - L < 2,05 m: un solo eje centrado, Q·L/4 (antes Q·L/2 para L <= d, el doble, y la
-        #    fórmula de dos ejes entre 1,2 y 2,05 m, por debajo del eje único);
-        #  - cortante: un eje sobre el apoyo y el otro a d, Q·(2 − d/L) (antes 2Q, con los dos
-        #    ejes a la vez sobre el apoyo, físicamente imposible: +2 % en 30 m, +6 % en 20 m).
         d = LM1_TS_AXLE_SPACING_m
-        M_ts_lane = tandem_bending_moment_barre(Q_eff, L, d)
+        M_ts_lane = tandem_bending_moment_barre(Q_eff, L, d) if Q_eff > 0.0 else 0.0
 
         M_TS += M_ts_lane
-        V_TS += tandem_shear_force_support(Q_eff, L, d)
+        V_TS += tandem_shear_force_support(Q_eff, L, d) if Q_eff > 0.0 else 0.0
         total_TS_load += 2.0 * Q_eff
 
         # UDL per lane
         q = LM1_UDL_kN_per_m2_PER_LANE[min(i, 2)]
         alpha_q = inp.alpha_q1 if i == 0 else inp.alpha_qr
-        w = alpha_q * q * LM1_NOTIONAL_LANE_WIDTH_m  # kN/m
+        w = alpha_q * q * lane_width_m  # kN/m
         M_UDL += w * L ** 2 / 8.0
         V_UDL += w * L / 2.0
         total_UDL_linear += w
+
+    # Área restante (EN 1991-2 Tabla 4.2: q_rk = 2.5 kN/m² con factor alpha_qr)
+    w_rem = inp.alpha_qr * LM1_REMAINING_AREA_UDL_kN_per_m2 * rem_width_m
+    M_rem = w_rem * L ** 2 / 8.0
+    V_rem = w_rem * L / 2.0
+
+    if inp.include_remaining_area:
+        M_UDL += M_rem
+        V_UDL += V_rem
+        total_UDL_linear += w_rem
 
     return EurocodeLM1Result(
         n_lanes=n_lanes,
@@ -172,6 +219,13 @@ def evaluate_eurocode_lm1(inp: EurocodeLM1Input) -> EurocodeLM1Result:
         V_total_kN=V_TS + V_UDL,
         total_TS_load_kN=total_TS_load,
         total_UDL_load_kN_per_m=total_UDL_linear,
+        lane_width_m=lane_width_m,
+        remaining_area_width_m=rem_width_m,
+        remaining_UDL_load_kN_per_m=w_rem,
+        M_remaining_kNm=M_rem,
+        V_remaining_kN=V_rem,
+        M_total_with_remaining_kNm=M_TS + M_UDL + (0.0 if inp.include_remaining_area else M_rem),
+        V_total_with_remaining_kN=V_TS + V_UDL + (0.0 if inp.include_remaining_area else V_rem),
     )
 
 
@@ -201,6 +255,8 @@ def evaluate_eurocode_lm2(inp: EurocodeLM2Input) -> EurocodeLM2Result:
 __all__ = [
     "EurocodeLM1Input", "EurocodeLM1Result", "evaluate_eurocode_lm1",
     "EurocodeLM2Input", "EurocodeLM2Result", "evaluate_eurocode_lm2",
+    "notional_lanes_en1991_2",
     "LM1_TS_AXLE_kN_PER_LANE", "LM1_UDL_kN_per_m2_PER_LANE",
+    "LM1_REMAINING_AREA_UDL_kN_per_m2",
     "LM2_AXLE_LOAD_kN",
 ]

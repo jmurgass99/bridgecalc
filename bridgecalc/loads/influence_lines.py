@@ -264,6 +264,113 @@ def influence_line_continuous(
                           quantity=quantity, location_m=x_eval)
 
 
+def influence_line_reaction_continuous(
+    spans: Sequence[float],
+    support_index: int,
+    n_points: int = 200,
+) -> InfluenceLine:
+    """Línea de influencia de la reacción vertical en el apoyo ``support_index``
+    (0 = estribo izquierdo, 1..n_spans-1 = pilas interiores, n_spans = estribo derecho)
+    para una viga continua de ``len(spans)`` vanos con EI constante.
+
+    Obtiene los momentos hiperestáticos en los apoyos mediante la ecuación de los
+    tres momentos (Clapeyron) y suma a la reacción isostática de los vanos adyacentes
+    el par hiperestático ``(M_ady - M_i) / L``. Cumple exactamente ``sum_i R_i(x) = 1``
+    en todo punto ``x`` del tablero.
+    """
+    n_spans = len(spans)
+    if n_spans < 1:
+        raise ValueError("spans debe contener al menos 1 vano")
+    if any(s <= 0 for s in spans):
+        raise ValueError("Todas las luces deben ser > 0")
+    if not (0 <= support_index <= n_spans):
+        raise ValueError(f"support_index={support_index} fuera de [0, {n_spans}]")
+
+    total_L = float(sum(spans))
+    x_global = np.array([], dtype=float)
+    supports = [0.0]
+    acc = 0.0
+    for s in spans:
+        x_span = np.linspace(acc, acc + s, n_points, endpoint=False)
+        x_global = np.concatenate([x_global, x_span])
+        acc += float(s)
+        supports.append(acc)
+    x_global = np.concatenate([x_global, [total_L]])
+
+    n_int = n_spans - 1
+    A = np.zeros((n_int, n_int))
+    for k in range(n_int):
+        L_l = float(spans[k])
+        L_r = float(spans[k + 1])
+        A[k, k] = 2.0 * (L_l + L_r)
+        if k > 0:
+            A[k, k - 1] = L_l
+        if k < n_int - 1:
+            A[k, k + 1] = L_r
+
+    def _solve_support_moments(x_P: float) -> list[float]:
+        if n_int == 0:
+            return [0.0, 0.0]
+        b_rhs = np.zeros(n_int)
+        for k in range(n_int):
+            i_left = k
+            i_right = k + 1
+            L_l = float(spans[i_left])
+            L_r = float(spans[i_right])
+            rhs_val = 0.0
+            x_start_l, x_end_l = supports[i_left], supports[i_left + 1]
+            if x_start_l <= x_P <= x_end_l:
+                a_loc = x_P - x_start_l
+                rhs_val -= a_loc * (L_l ** 2 - a_loc ** 2) / L_l
+            x_start_r, x_end_r = supports[i_right], supports[i_right + 1]
+            if x_start_r <= x_P <= x_end_r:
+                a_loc = x_P - x_start_r
+                b_loc = L_r - a_loc
+                rhs_val -= b_loc * (L_r ** 2 - b_loc ** 2) / L_r
+            b_rhs[k] = rhs_val
+        if n_int == 1:
+            M_int = [float(b_rhs[0] / A[0, 0])]
+        else:
+            M_int = np.linalg.solve(A, b_rhs).tolist()
+        return [0.0] + M_int + [0.0]
+
+    ordinates = np.zeros(len(x_global))
+    for j, x_P in enumerate(x_global):
+        M_sup = _solve_support_moments(float(x_P))
+        r_val = 0.0
+        # Contribución del vano izquierdo al apoyo `support_index` (extremo derecho del vano i_left)
+        if support_index > 0:
+            i_left = support_index - 1
+            L_l = float(spans[i_left])
+            x_start_l, x_end_l = supports[i_left], supports[i_left + 1]
+            r_simple_l = 0.0
+            if x_start_l <= x_P <= x_end_l:
+                # Si x_P coincide exactamente con un apoyo interior y hay vano derecho,
+                # evitamos duplicar la carga puntual en ambos vanos.
+                if not (support_index < n_spans and abs(x_P - x_end_l) < 1e-12):
+                    r_simple_l = (x_P - x_start_l) / L_l
+            r_val += r_simple_l + (M_sup[i_left] - M_sup[support_index]) / L_l
+
+        # Contribución del vano derecho al apoyo `support_index` (extremo izquierdo del vano i_right)
+        if support_index < n_spans:
+            i_right = support_index
+            L_r = float(spans[i_right])
+            x_start_r, x_end_r = supports[i_right], supports[i_right + 1]
+            r_simple_r = 0.0
+            if x_start_r <= x_P <= x_end_r:
+                r_simple_r = (x_end_r - x_P) / L_r
+            r_val += r_simple_r + (M_sup[support_index + 1] - M_sup[support_index]) / L_r
+
+        ordinates[j] = r_val
+
+    return InfluenceLine(
+        x_m=x_global,
+        ordinates=ordinates,
+        quantity="R",
+        location_m=supports[support_index],
+    )
+
+
 def critical_position(
     il: InfluenceLine,
     truck_loads: Sequence[tuple[float, float]],
@@ -322,5 +429,6 @@ __all__ = [
     "two_span_continuous_M_at_support",
     "envelope_from_il",
     "influence_line_continuous",
+    "influence_line_reaction_continuous",
     "critical_position",
 ]

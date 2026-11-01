@@ -37,6 +37,9 @@ Issues = "https://github.com/jmurgass99/bridgecalc/issues"
 [tool.setuptools.packages.find]
 include = ["bridgecalc*"]
 
+[tool.setuptools.package-data]
+bridgecalc = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
