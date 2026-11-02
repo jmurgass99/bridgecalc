@@ -44,12 +44,19 @@ def main() -> None:
         filas[lead.name] = fila
         print(f"  {lead.name:16} " + " ".join(f"{t:8.0f}" for t in fila))
     gob = max(filas, key=lambda k: filas[k][0])
+    filas_max = {e: max(f[i] for f in filas.values()) for i, e in enumerate(("6.10", "6.10a", "6.10b"))}
     print(f"  función (máx. sobre dominantes): 6.10 {c.uls_strength(G, vars_puente, '6.10'):.0f}, 6.10a {c.uls_strength(G, vars_puente, '6.10a'):.0f}, 6.10b {c.uls_strength(G, vars_puente, '6.10b'):.0f} kN·m → en 6.10 gobierna «{gob}» como dominante")
     print("  La sobrecarga repartida gana al tándem como dominante aunque valga la mitad: su ψ0 = 0,40 es el más bajo, así que es la que más sube al pasar de ψ0·Q a Q (0,60·700 = 420 frente a 0,25·1400 = 350 kN·m).")
     print(f"  SLS característica {c.sls_combination(G, vars_puente):.0f}, frecuente {c.sls_combination(G, vars_puente, 'frequent'):.0f}, casi permanente {c.sls_combination(G, vars_puente, 'quasi_permanent'):.0f} kN·m (solo la térmica tiene ψ2 ≠ 0)")
     c.GAMMA_Q = gamma_q_original
+    print("\n3) Lo mismo con las categorías del Anexo A2 que trae el módulo y uls_bridge_strength (γ_Q = 1,35 solo al tráfico):")
+    vars_a2 = [c.VariableAction("tándem TS", 1400.0, "traffic_gr1a_ts"), c.VariableAction("sobrecarga UDL", 700.0, "traffic_gr1a_udl"),
+               c.VariableAction("viento", 260.0, "wind_bridge"), c.VariableAction("temperatura", 180.0, "thermal_bridge")]
+    for expr in ("6.10", "6.10a", "6.10b"):
+        a2 = c.uls_bridge_strength(G, vars_a2, expr)
+        print(f"  ULS {expr:5}: {a2:8.0f} kN·m (apartado 2, con γ_Q = 1,35 también en viento y temperatura: {filas_max[expr]:8.0f})")
+    print("  La diferencia es el γ_Q = 1,50 que la Tabla A2.4(B) deja para viento y temperatura; el apartado 2 los mayoraba con 1,35.")
     print("\nEN 1990 A2 trata el gr1a (TS + UDL) como un grupo con un solo ψ0 del grupo; aquí se separan para ver el efecto. "
-          "El módulo no conoce el Anexo A2: γ_Q, γ_G de puentes (1,35 también) y ψ hay que ponerlos a mano, y GAMMA_Q es estado global del módulo (devuélvelo a 1,50 después, como arriba). "
           "6.10a usa ψ0 también en la dominante; 6.10b reduce las permanentes con ξ = 0,85.")
 
 

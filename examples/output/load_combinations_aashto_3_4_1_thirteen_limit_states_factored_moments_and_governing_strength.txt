@@ -23,4 +23,11 @@ Tabla paralela aashto_lrfd.get_design_force('STRENGTH_I'): 7162 kN·m = 1,25·DC
 
 Factores de resistencia φ (§5.5.4.2): flexure_tension_controlled_concrete 0.9, compression_controlled_spirals 0.75, compression_controlled_other 0.75, shear_normal_weight_concrete 0.9, shear_lightweight_concrete 0.7, torsion_concrete 0.9, bearing_on_concrete 0.7, tension_steel 0.95
 
-Strength IV (1,50·DC) solo gobierna con mucha carga permanente frente a la viva; Extreme I usa 0,50·LL con el sismo. Los γ_WS del módulo (1,40 Strength III, 0,40 Strength V, 0,30 Service I, 0,70 Service IV) son los del esquema anterior a la 8ª edición (2017); desde ésta el viento parte de una ráfaga de 3 s y Strength III pasó a γ_WS = 1,0, con velocidades propias para Strength V y Service I. Revisa la Tabla 3.4.1-1 de la edición que te aplique.
+Strength IV (1,50·DC) solo gobierna con mucha carga permanente frente a la viva; Extreme I usa 0,50·LL con el sismo. Por defecto los γ_WS (1,40 Strength III, 0,40 Strength V, 0,30 Service I, 0,70 Service IV) son los del esquema anterior a la 8ª edición (2017); con edition="9th" el módulo usa γ_WS = 1,00 en esos cuatro estados (viento de ráfaga de 3 s con sus propias velocidades), sin contrastar aquí con la Tabla 3.4.1-1.
+
+edition="9th" frente a "7th" (mismos momentos; el WS de 120 kN·m habría que recalcularlo con la velocidad de la 9ª):
+  Strength_III  γ_WS 1.40 → 1.00: M =   4093 →   4045 kN·m
+  Strength_V    γ_WS 0.40 → 1.00: M =   6510 →   6582 kN·m
+  Service_I     γ_WS 0.30 → 1.00: M =   4976 →   5060 kN·m
+  Service_IV    γ_WS 0.70 → 1.00: M =   3134 →   3170 kN·m
+  Gobierna en resistencia (9ª): Strength_I con 7268 kN·m

@@ -28,8 +28,14 @@ def main() -> None:
     print(f"  STRENGTH_I: {AASHTO_COMBINATIONS['STRENGTH_I'].name}; EH = {AASHTO_COMBINATIONS['STRENGTH_I'].EH}, EV = {AASHTO_COMBINATIONS['STRENGTH_I'].EV} (empujes de tierras para estribos)")
     print("\nFactores de resistencia φ (§5.5.4.2): " + ", ".join(f"{k} {v}" for k, v in RESISTANCE_FACTORS.items()))
     print("\nStrength IV (1,50·DC) solo gobierna con mucha carga permanente frente a la viva; Extreme I usa 0,50·LL con el sismo. "
-          "Los γ_WS del módulo (1,40 Strength III, 0,40 Strength V, 0,30 Service I, 0,70 Service IV) son los del esquema anterior a la 8ª edición (2017); desde ésta el viento parte de una ráfaga de 3 s "
-          "y Strength III pasó a γ_WS = 1,0, con velocidades propias para Strength V y Service I. Revisa la Tabla 3.4.1-1 de la edición que te aplique.")
+          "Por defecto los γ_WS (1,40 Strength III, 0,40 Strength V, 0,30 Service I, 0,70 Service IV) son los del esquema anterior a la 8ª edición (2017); "
+          "con edition=\"9th\" el módulo usa γ_WS = 1,00 en esos cuatro estados (viento de ráfaga de 3 s con sus propias velocidades), sin contrastar aquí con la Tabla 3.4.1-1.")
+    print("\nedition=\"9th\" frente a \"7th\" (mismos momentos; el WS de 120 kN·m habría que recalcularlo con la velocidad de la 9ª):")
+    for ls in ("Strength_III", "Strength_V", "Service_I", "Service_IV"):
+        r7, r9 = factored_effect(ls, M), factored_effect(ls, M, edition="9th")
+        print(f"  {ls:13} γ_WS {gamma(ls, 'WS'):4.2f} → {gamma(ls, 'WS', edition='9th'):4.2f}: M = {r7.factored_effect:6.0f} → {r9.factored_effect:6.0f} kN·m")
+    g9 = governing_strength(M, edition="9th")
+    print(f"  Gobierna en resistencia (9ª): {g9.limit_state} con {g9.factored_effect:.0f} kN·m")
 
 
 if __name__ == "__main__":

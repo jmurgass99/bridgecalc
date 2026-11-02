@@ -33,7 +33,7 @@ En el anteproyecto de un puente las primeras preguntas son de órdenes de magnit
 pip install git+https://github.com/jmurgass99/bridgecalc.git
 ```
 
-Extras: `api` (FastAPI, pydantic, httpx), `dxf` (ezdxf para el plano de disposición), `memos` (handcalcs; sin él la memoria sale con un LaTeX manual equivalente y lo declara en `latex_engine`), `test`. Para desarrollo: `git clone`, `pip install -e ".[test,api]"`, `pytest -q` (45 ficheros de tests; `tests/test_examples.py` ejecuta los 32 ejemplos como subprocesos). En Windows, si la consola no es UTF-8, ejecuta los ejemplos con `python -X utf8 examples/<nombre>.py`. Los ejemplos escriben sus ficheros (JSON, DXF, script pyRevit, memorias) en `examples/out/`, que no se versiona, y su salida de consola en `examples/output/`.
+Extras: `api` (FastAPI, pydantic, httpx), `dxf` (ezdxf para el plano de disposición), `memos` (handcalcs; sin él la memoria sale con un LaTeX manual equivalente y lo declara en `latex_engine`), `test`. Para desarrollo: `git clone`, `pip install -e ".[test,api]"`, `pytest -q` (47 ficheros de tests; `tests/test_examples.py` ejecuta los 32 ejemplos como subprocesos). En Windows, si la consola no es UTF-8, ejecuta los ejemplos con `python -X utf8 examples/<nombre>.py`. Los ejemplos escriben sus ficheros (JSON, DXF, script pyRevit, memorias) en `examples/out/`, que no se versiona, y su salida de consola en `examples/output/`.
 
 ## Capacidades
 
@@ -167,7 +167,14 @@ Tabla paralela aashto_lrfd.get_design_force('STRENGTH_I'): 7162 kN·m = 1,25·DC
 
 Factores de resistencia φ (§5.5.4.2): flexure_tension_controlled_concrete 0.9, compression_controlled_spirals 0.75, compression_controlled_other 0.75, shear_normal_weight_concrete 0.9, shear_lightweight_concrete 0.7, torsion_concrete 0.9, bearing_on_concrete 0.7, tension_steel 0.95
 
-Strength IV (1,50·DC) solo gobierna con mucha carga permanente frente a la viva; Extreme I usa 0,50·LL con el sismo. Los γ_WS del módulo (1,40 Strength III, 0,40 Strength V, 0,30 Service I, 0,70 Service IV) son los del esquema anterior a la 8ª edición (2017); desde ésta el viento parte de una ráfaga de 3 s y Strength III pasó a γ_WS = 1,0, con velocidades propias para Strength V y Service I. Revisa la Tabla 3.4.1-1 de la edición que te aplique.
+Strength IV (1,50·DC) solo gobierna con mucha carga permanente frente a la viva; Extreme I usa 0,50·LL con el sismo. Por defecto los γ_WS (1,40 Strength III, 0,40 Strength V, 0,30 Service I, 0,70 Service IV) son los del esquema anterior a la 8ª edición (2017); con edition="9th" el módulo usa γ_WS = 1,00 en esos cuatro estados (viento de ráfaga de 3 s con sus propias velocidades), sin contrastar aquí con la Tabla 3.4.1-1.
+
+edition="9th" frente a "7th" (mismos momentos; el WS de 120 kN·m habría que recalcularlo con la velocidad de la 9ª):
+  Strength_III  γ_WS 1.40 → 1.00: M =   4093 →   4045 kN·m
+  Strength_V    γ_WS 0.40 → 1.00: M =   6510 →   6582 kN·m
+  Service_I     γ_WS 0.30 → 1.00: M =   4976 →   5060 kN·m
+  Service_IV    γ_WS 0.70 → 1.00: M =   3134 →   3170 kN·m
+  Gobierna en resistencia (9ª): Strength_I con 7268 kN·m
 ```
 
 </details>
@@ -339,6 +346,13 @@ Tándem de Barré por carril en L = 30 m: 300 kN → M 4322 kN·m, V 588 kN, 200
 Luz corta: en L = 1,5 m (< 2,05 m) manda un solo eje centrado: M = 112.5 kN·m = 300·1,5/4
 
 MC2 en el modelo (L local = luz del vano) es solo orientativo: la comprobación local real usa la luz entre vigas o nervios, no la del tablero. El módulo publica un solo ψ0 = 0.75 (el del tándem); la sobrecarga repartida tiene otro menor en IAP-11, así que para combinar por separado ponlo a mano. El valor de dimensionamiento longitudinal es el MC1.
+
+evaluate_eurocode_lm1 con use_table_4_1_lanes=True e include_remaining_area=True (EN 1991-2 Tabla 4.1), L = 30 m:
+  w =  4.5 m: por defecto 1 carril(es), M =   7359 kN·m; Tabla 4.1 1 carril(es) de 3.00 m + resto 1.50 m, M =   7781 kN·m
+  w =  5.5 m: por defecto 1 carril(es), M =   7359 kN·m; Tabla 4.1 2 carril(es) de 2.75 m + resto 0.00 m, M =  10761 kN·m
+  w =  7.0 m: por defecto 2 carril(es), M =  11084 kN·m; Tabla 4.1 2 carril(es) de 3.00 m + resto 1.00 m, M =  11366 kN·m
+  w = 10.0 m: por defecto 3 carril(es), M =  13369 kN·m; Tabla 4.1 3 carril(es) de 3.00 m + resto 1.00 m, M =  13650 kN·m
+  w = 12.5 m: por defecto 3 carril(es), M =  13369 kN·m; Tabla 4.1 4 carril(es) de 3.00 m + resto 0.50 m, M =  14353 kN·m
 ```
 
 </details>
@@ -370,7 +384,13 @@ Permanentes (kN·m por tablero): {'tablero': 1800.0, 'pavimento+barreras': 320.0
   La sobrecarga repartida gana al tándem como dominante aunque valga la mitad: su ψ0 = 0,40 es el más bajo, así que es la que más sube al pasar de ψ0·Q a Q (0,60·700 = 420 frente a 0,25·1400 = 350 kN·m).
   SLS característica 4134, frecuente 3260, casi permanente 2210 kN·m (solo la térmica tiene ψ2 ≠ 0)
 
-EN 1990 A2 trata el gr1a (TS + UDL) como un grupo con un solo ψ0 del grupo; aquí se separan para ver el efecto. El módulo no conoce el Anexo A2: γ_Q, γ_G de puentes (1,35 también) y ψ hay que ponerlos a mano, y GAMMA_Q es estado global del módulo (devuélvelo a 1,50 después, como arriba). 6.10a usa ψ0 también en la dominante; 6.10b reduce las permanentes con ξ = 0,85.
+3) Lo mismo con las categorías del Anexo A2 que trae el módulo y uls_bridge_strength (γ_Q = 1,35 solo al tráfico):
+  ULS 6.10 :     5620 kN·m (apartado 2, con γ_Q = 1,35 también en viento y temperatura:     5581)
+  ULS 6.10a:     5054 kN·m (apartado 2, con γ_Q = 1,35 también en viento y temperatura:     5014)
+  ULS 6.10b:     5191 kN·m (apartado 2, con γ_Q = 1,35 también en viento y temperatura:     5152)
+  La diferencia es el γ_Q = 1,50 que la Tabla A2.4(B) deja para viento y temperatura; el apartado 2 los mayoraba con 1,35.
+
+EN 1990 A2 trata el gr1a (TS + UDL) como un grupo con un solo ψ0 del grupo; aquí se separan para ver el efecto. 6.10a usa ψ0 también en la dominante; 6.10b reduce las permanentes con ξ = 0,85.
 ```
 
 </details>
@@ -474,6 +494,14 @@ Tres vanos desiguales [20.0, 30.0, 25.0] m: LI contra rigidez directa (EI = 1)
 LI de cortante en x = 15 m de la viga de 2 × 30 m: salto de -0.590 a +0.403; en el segundo vano es -0.0938 (pequeña y del signo del levantamiento)
 
 La columna «versión 1.0» muestra el espejo: en el apoyo de 20 m, una carga a 27 m (7 m dentro del vano central) daba −1,33 cuando vale −2,51, y una a 44 m daba −2,31 cuando vale −1,11. El test dorado de la forma cerrada no lo detectaba porque solo comprobaba el valor del mínimo, idéntico en la LI reflejada. EI constante: no vale para cartelas ni cambios de sección.
+
+LI de reacciones (influence_line_reaction_continuous), viga de 2 × 20 m, frente a la forma cerrada:
+  R0 con P = 1 en x =  5.0 m: 0.6914 (forma cerrada 0.6914, +0.00%)
+  R0 con P = 1 en x = 10.0 m: 0.4063 (forma cerrada 0.4062, +0.00%)
+  R0 con P = 1 en x = 15.0 m: 0.1680 (forma cerrada 0.1680, +0.00%)
+  R1 con P = 1 en x =  5.0 m: 0.3672 (forma cerrada 0.3672, -0.00%); simétrico x = 35 m: 0.3672
+  R1 con P = 1 en x = 10.0 m: 0.6875 (forma cerrada 0.6875, -0.00%); simétrico x = 30 m: 0.6875
+  R1 con P = 1 en x = 15.0 m: 0.9141 (forma cerrada 0.9141, -0.00%); simétrico x = 25 m: 0.9141
 ```
 
 </details>
@@ -1170,10 +1198,10 @@ La validación de rango la hace Pydantic (422) antes de llegar al núcleo; los V
 ## Limitaciones
 
 - Todas las envolventes son por carril de diseño y sin factor de distribución ni de presencia múltiple, salvo que se indique. `hl93_envelope` barre 60 posiciones y queda ≈ 0,1 % por debajo del máximo de Barré.
-- `envelope_multispan` supone EI constante, apoyos rígidos y un carril; no publica reacciones ni levantamientos en los estribos. Las líneas de influencia continuas tampoco admiten cambios de sección.
+- `envelope_multispan` supone EI constante, apoyos rígidos y un carril, y no publica reacciones ni levantamientos en los estribos: las líneas de influencia de reacción (`influence_line_reaction_continuous`, que coinciden con la forma cerrada) hay que envolverlas a mano. Las líneas de influencia continuas no admiten cambios de sección.
 - `loads.multi_code` (AS 5100.2 y camión colombiano) usa coeficientes de envolvente no contrastados con esas normas; los convoyes «SV120», «SV196» y «AS 5100.2 SM1600 T44» de `lm3_special` son de ejemplo, y su momento se evalúa en el centro de la luz. El camión chileno de 44 t (62/185/185 kN, IM 25 %) se toma tal como lo define el módulo y no se ha contrastado aquí con el Manual de Carreteras del MOP; sus nombres en el código (`hl93k_nch_envelope`, `NCH_*`) se conservan por compatibilidad, pero NCh 3171 es la norma chilena de combinaciones de carga, no la que define el camión.
-- `evaluate_eurocode_lm1` reparte ⌊w/3⌋ carriles con tope de 3 y sin área remanente; para calzadas que no son múltiplo de 3 m o entre 5,4 y 6 m usa `iap11_lane_layout` o `evaluate_iap11_traffic_loads`.
-- `en1990_combinations` lleva los ψ de edificación y γ_Q = 1,50 como constante del módulo; para puentes hay que añadir los ψ del Anexo A2 y cambiar γ_Q, como hace el ejemplo. `load_combinations` usa los γ_WS anteriores a la 8ª edición del LRFD (Strength III 1,40). `wind_pressure_bridge` es la presión dinámica sin ráfaga, altura ni exposición.
+- `evaluate_eurocode_lm1` reparte por defecto ⌊w/3⌋ carriles con tope de 3 y sin área remanente; con `use_table_4_1_lanes=True` aplica la Tabla 4.1 de EN 1991-2 (también 5,4 ≤ w < 6 m y más de 3 carriles) y con `include_remaining_area=True` suma q_rk sobre el resto.
+- `en1990_combinations` trae los ψ de la Tabla A2.1 (`traffic_gr1a_ts`, `traffic_gr1a_udl`, `wind_bridge`, `thermal_bridge`…) y `uls_bridge_strength` aplica γ_Q = 1,35 al tráfico, pero trata TS y UDL como acciones separadas, no como el grupo gr1a. `load_combinations` usa por defecto los γ_WS anteriores a la 8ª edición del LRFD; con `edition="9th"` pone γ_WS = 1,00 en Strength III/V y Service I/IV, sin contrastar aquí con la Tabla 3.4.1-1. `wind_pressure_bridge` es la presión dinámica sin ráfaga, altura ni exposición.
 - `design`: secciones rectangulares equivalentes, f_ps aproximado, β = 2 y θ = 36° fijos, sin pérdidas ni fases; los ratios devuelven `inf` con capacidad nula en vez de lanzar. `shear_key_capacity` usa por defecto c = 0,5 MPa y μ = 1,0, que no es ninguna fila de la tabla de AASHTO: pasa los coeficientes de la superficie real.
 - `pier_pushover_sdof` estima M_y = 0,9·A_s·f_y·d + 0,1·N·D, M_u = 1,1·M_y y φ_u = 10·φ_y, con Ø 25 mm fijo para la rótula; `behavior_factor_q` solo corrige por esbeltez de cortante y `confinement_required` omite el término de la cuantía longitudinal.
 - `HAZUS_RC_PIER_PARAMS` y las curvas de `datasets.concepcion_2010` son parámetros representativos, y las cinco pilas del Maule 2010 llevan momentos y rotaciones asignados en el código, no medidos. El endpoint de Park-Ang llama `collapse_risk` a DI ≥ 0,7.

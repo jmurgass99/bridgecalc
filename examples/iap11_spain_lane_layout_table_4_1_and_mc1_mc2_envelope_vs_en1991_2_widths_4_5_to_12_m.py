@@ -41,6 +41,13 @@ def main() -> None:
     print(f"\nMC2 en el modelo (L local = luz del vano) es solo orientativo: la comprobación local real usa la luz entre vigas o nervios, no la del tablero. "
           f"El módulo publica un solo ψ0 = {IAP11_PSI_0} (el del tándem); la sobrecarga repartida tiene otro menor en IAP-11, así que para combinar por separado ponlo a mano. El valor de dimensionamiento longitudinal es el MC1.")
 
+    print("\nevaluate_eurocode_lm1 con use_table_4_1_lanes=True e include_remaining_area=True (EN 1991-2 Tabla 4.1), L = 30 m:")
+    for w in (4.5, 5.5, 7.0, 10.0, 12.5):
+        d = evaluate_eurocode_lm1(EurocodeLM1Input(carriageway_width_m=w, span_m=30.0))
+        t = evaluate_eurocode_lm1(EurocodeLM1Input(carriageway_width_m=w, span_m=30.0, use_table_4_1_lanes=True, include_remaining_area=True))
+        print(f"  w = {w:4.1f} m: por defecto {d.n_lanes} carril(es), M = {d.M_total_kNm:6.0f} kN·m; Tabla 4.1 {t.n_lanes} carril(es) de {t.lane_width_m:.2f} m "
+              f"+ resto {t.remaining_area_width_m:.2f} m, M = {t.M_total_kNm:6.0f} kN·m")
+
 
 if __name__ == "__main__":
     main()

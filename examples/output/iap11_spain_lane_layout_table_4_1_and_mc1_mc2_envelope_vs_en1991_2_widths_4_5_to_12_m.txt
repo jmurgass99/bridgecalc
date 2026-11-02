@@ -24,3 +24,10 @@ Tándem de Barré por carril en L = 30 m: 300 kN → M 4322 kN·m, V 588 kN, 200
 Luz corta: en L = 1,5 m (< 2,05 m) manda un solo eje centrado: M = 112.5 kN·m = 300·1,5/4
 
 MC2 en el modelo (L local = luz del vano) es solo orientativo: la comprobación local real usa la luz entre vigas o nervios, no la del tablero. El módulo publica un solo ψ0 = 0.75 (el del tándem); la sobrecarga repartida tiene otro menor en IAP-11, así que para combinar por separado ponlo a mano. El valor de dimensionamiento longitudinal es el MC1.
+
+evaluate_eurocode_lm1 con use_table_4_1_lanes=True e include_remaining_area=True (EN 1991-2 Tabla 4.1), L = 30 m:
+  w =  4.5 m: por defecto 1 carril(es), M =   7359 kN·m; Tabla 4.1 1 carril(es) de 3.00 m + resto 1.50 m, M =   7781 kN·m
+  w =  5.5 m: por defecto 1 carril(es), M =   7359 kN·m; Tabla 4.1 2 carril(es) de 2.75 m + resto 0.00 m, M =  10761 kN·m
+  w =  7.0 m: por defecto 2 carril(es), M =  11084 kN·m; Tabla 4.1 2 carril(es) de 3.00 m + resto 1.00 m, M =  11366 kN·m
+  w = 10.0 m: por defecto 3 carril(es), M =  13369 kN·m; Tabla 4.1 3 carril(es) de 3.00 m + resto 1.00 m, M =  13650 kN·m
+  w = 12.5 m: por defecto 3 carril(es), M =  13369 kN·m; Tabla 4.1 4 carril(es) de 3.00 m + resto 0.50 m, M =  14353 kN·m

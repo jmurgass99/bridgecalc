@@ -20,4 +20,10 @@ Permanentes (kN·m por tablero): {'tablero': 1800.0, 'pavimento+barreras': 320.0
   La sobrecarga repartida gana al tándem como dominante aunque valga la mitad: su ψ0 = 0,40 es el más bajo, así que es la que más sube al pasar de ψ0·Q a Q (0,60·700 = 420 frente a 0,25·1400 = 350 kN·m).
   SLS característica 4134, frecuente 3260, casi permanente 2210 kN·m (solo la térmica tiene ψ2 ≠ 0)
 
-EN 1990 A2 trata el gr1a (TS + UDL) como un grupo con un solo ψ0 del grupo; aquí se separan para ver el efecto. El módulo no conoce el Anexo A2: γ_Q, γ_G de puentes (1,35 también) y ψ hay que ponerlos a mano, y GAMMA_Q es estado global del módulo (devuélvelo a 1,50 después, como arriba). 6.10a usa ψ0 también en la dominante; 6.10b reduce las permanentes con ξ = 0,85.
+3) Lo mismo con las categorías del Anexo A2 que trae el módulo y uls_bridge_strength (γ_Q = 1,35 solo al tráfico):
+  ULS 6.10 :     5620 kN·m (apartado 2, con γ_Q = 1,35 también en viento y temperatura:     5581)
+  ULS 6.10a:     5054 kN·m (apartado 2, con γ_Q = 1,35 también en viento y temperatura:     5014)
+  ULS 6.10b:     5191 kN·m (apartado 2, con γ_Q = 1,35 también en viento y temperatura:     5152)
+  La diferencia es el γ_Q = 1,50 que la Tabla A2.4(B) deja para viento y temperatura; el apartado 2 los mayoraba con 1,35.
+
+EN 1990 A2 trata el gr1a (TS + UDL) como un grupo con un solo ψ0 del grupo; aquí se separan para ver el efecto. 6.10a usa ψ0 también en la dominante; 6.10b reduce las permanentes con ξ = 0,85.

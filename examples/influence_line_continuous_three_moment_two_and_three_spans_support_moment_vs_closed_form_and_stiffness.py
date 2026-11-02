@@ -11,7 +11,11 @@ Ejecutar:  python examples/influence_line_continuous_three_moment_two_and_three_
 """
 import numpy as np
 
-from bridgecalc.loads.influence_lines import influence_line_continuous, two_span_continuous_M_at_support
+from bridgecalc.loads.influence_lines import (
+    influence_line_continuous,
+    influence_line_reaction_continuous,
+    two_span_continuous_M_at_support,
+)
 
 
 def stiffness_moment(spans, a, x_query, P=1.0):
@@ -69,6 +73,18 @@ def main() -> None:
     print(f"\nLI de cortante en x = 15 m de la viga de 2 × 30 m: salto de {np.interp(14.9, il_v.x_m, il_v.ordinates):+.3f} a {np.interp(15.1, il_v.x_m, il_v.ordinates):+.3f}; en el segundo vano es {np.interp(45.0, il_v.x_m, il_v.ordinates):+.4f} (pequeña y del signo del levantamiento)")
     print("\nLa columna «versión 1.0» muestra el espejo: en el apoyo de 20 m, una carga a 27 m (7 m dentro del vano central) daba −1,33 cuando vale −2,51, y una a 44 m daba −2,31 cuando vale −1,11. "
           "El test dorado de la forma cerrada no lo detectaba porque solo comprobaba el valor del mínimo, idéntico en la LI reflejada. EI constante: no vale para cartelas ni cambios de sección.")
+
+    print("\nLI de reacciones (influence_line_reaction_continuous), viga de 2 × 20 m, frente a la forma cerrada:")
+    Lr = 20.0
+    for sup in (0, 1):
+        il_r = influence_line_reaction_continuous([Lr, Lr], sup, n_points=401)
+        for a in (5.0, 10.0, 15.0):
+            m1 = -a * (Lr ** 2 - a ** 2) / (4 * Lr ** 2)           # momento en la pila, carga unidad a en el vano 1
+            exact = (Lr - a) / Lr + m1 / Lr if sup == 0 else a / Lr - 2 * m1 / Lr
+            got = float(np.interp(a, il_r.x_m, il_r.ordinates))
+            sym = float(np.interp(2 * Lr - a, il_r.x_m, il_r.ordinates)) if sup == 1 else None
+            extra = f"; simétrico x = {2 * Lr - a:.0f} m: {sym:.4f}" if sym is not None else ""
+            print(f"  R{sup} con P = 1 en x = {a:4.1f} m: {got:.4f} (forma cerrada {exact:.4f}, {got / exact - 1:+.2%}){extra}")
 
 
 if __name__ == "__main__":
