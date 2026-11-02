@@ -1,4 +1,4 @@
-import type { BridgeEnvelopeResult, BridgeMesh } from "../data-model";
+import type { BridgeEnvelopeResult, BridgeMesh } from "../data-model.ts";
 
 const BRIDGE_WASM_BASE64 =
   "AGFzbQEAAAABDgJgAnx8AXxgA3x8fAF8AwMCAAEHMAIUaGw5M1NpbXBsZVNwYW5Nb21lbnQAABViZWFtRmxleHVyYWxTdGlmZm5lc3MAAQo+AiEAIAFEAAAAAACAVkAgAKKiRJqZmZmZmfI/IACiIACioAsaAEQAAAAAAAAoQCAAoiABoiACIAKiIAKiows=";

@@ -7,7 +7,7 @@
     "dev": "vite --open",
     "build": "vite build",
     "preview": "vite preview --open",
-    "test": "vitest run",
+    "test": "node src/__tests__/bridgeWeb.test.ts",
     "build:wasm": "emcc ./src/solver/cpp/bridgeSolver.cpp -o ./src/solver/cpp/built/bridgeSolver.wasm -O3 -s STANDALONE_WASM --no-entry -s EXPORTED_FUNCTIONS=_hl93SimpleSpanMoment,_beamFlexuralStiffness"
   },
   "dependencies": {

@@ -1,4 +1,4 @@
-import type { BridgeMesh } from "../data-model";
+import type { BridgeMesh } from "../data-model.ts";
 
 export function getBridgeMesh(
   spanM: number,
