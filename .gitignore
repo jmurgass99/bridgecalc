@@ -11,3 +11,7 @@ dist/
 
 # salidas de ficheros de los ejemplos (DXF, JSON, scripts pyRevit, memorias)
 examples/out/
+
+# salida de los ejemplos
+examples/output/
+examples/out/
